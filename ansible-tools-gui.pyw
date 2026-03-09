@@ -235,6 +235,8 @@ GitHub: https://github.com/your-repo/ansible-tools
                        value='explain-code', command=self.switch_service).pack(side=tk.LEFT, padx=10)
         ttk.Radiobutton(service_frame, text="Chat", variable=self.service,
                        value='chat', command=self.switch_service).pack(side=tk.LEFT, padx=10)
+        ttk.Radiobutton(service_frame, text="Analyze Files", variable=self.service,
+                       value='analyze', command=self.switch_service).pack(side=tk.LEFT, padx=10)
         
         # Input frame
         input_frame = ttk.LabelFrame(self.root, text="Input", padding="10")
@@ -247,6 +249,7 @@ GitHub: https://github.com/your-repo/ansible-tools
         input_buttons.pack(fill=tk.X, pady=5)
         
         ttk.Button(input_buttons, text="Upload File", command=self.upload_file).pack(side=tk.LEFT, padx=5)
+        ttk.Button(input_buttons, text="Upload Multiple Files", command=self.upload_multiple_files).pack(side=tk.LEFT, padx=5)
         ttk.Button(input_buttons, text="Generate", command=self.generate).pack(side=tk.LEFT, padx=5)
         ttk.Button(input_buttons, text="Clear", command=self.clear_all).pack(side=tk.LEFT, padx=5)
         
@@ -294,6 +297,11 @@ GitHub: https://github.com/your-repo/ansible-tools
             self.output_text.delete(1.0, tk.END)
             self.root.children['!labelframe'].config(text="Your Message")
             self.root.children['!labelframe2'].config(text="Response")
+        elif service == 'analyze':
+            self.input_text.delete(1.0, tk.END)
+            self.output_text.delete(1.0, tk.END)
+            self.root.children['!labelframe'].config(text="Files to Analyze")
+            self.root.children['!labelframe2'].config(text="Analysis")
     
     def upload_file(self):
         filename = filedialog.askopenfilename(
@@ -306,6 +314,17 @@ GitHub: https://github.com/your-repo/ansible-tools
                 content = f.read()
                 self.input_text.delete(1.0, tk.END)
                 self.input_text.insert(1.0, content)
+    
+    def upload_multiple_files(self):
+        filenames = filedialog.askopenfilenames(
+            title="Select files to analyze",
+            filetypes=(("All files", "*.*"), ("Python files", "*.py"), 
+                      ("YAML files", "*.yml *.yaml"), ("Text files", "*.txt"))
+        )
+        if filenames:
+            self.input_text.delete(1.0, tk.END)
+            for filename in filenames:
+                self.input_text.insert(tk.END, f"{filename}\n")
     
     def get_model_value(self):
         model_str = self.model.get().lower()
@@ -390,6 +409,18 @@ GitHub: https://github.com/your-repo/ansible-tools
                 endpoint = '/chat'
                 data = {'message': input_content, 'model': model}
                 output_key = 'response'
+            elif service == 'analyze':
+                endpoint = '/analyze'
+                file_paths = [line.strip() for line in input_content.split('\n') if line.strip()]
+                files_data = []
+                for path in file_paths:
+                    try:
+                        with open(path, 'r') as f:
+                            files_data.append({'path': path, 'content': f.read()})
+                    except Exception as e:
+                        files_data.append({'path': path, 'error': str(e)})
+                data = {'files': files_data, 'model': model}
+                output_key = 'analysis'
             else:  # explain-code
                 endpoint = '/explain-code'
                 data = {'code': input_content, 'model': model}

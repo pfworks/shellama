@@ -34,6 +34,7 @@ Commands:
   explain-ansible <file>   Explain an Ansible playbook
   generate-code <file>     Generate code from description
   explain-code <file>      Explain code
+  analyze <file1> [file2 ...] Analyze one or more files
   chat                     Interactive chat mode (general questions)
   interactive              Interactive mode (Ansible tools)
 
@@ -43,6 +44,7 @@ Examples:
   
   ansible-tools shell2ansible commands.txt > playbook.yml
   ansible-tools explain-ansible playbook.yml
+  ansible-tools analyze script.py config.yml
   ansible-tools chat
 
 SSL Setup:
@@ -153,6 +155,37 @@ def explain_code(file_path):
     
     print(result['explanation'])
     status = f"\n# Explained in {result['elapsed']}s | Tokens: {result['total_tokens']}"
+    if result.get('queue_position'):
+        status += f" | Was #{result['queue_position']} in queue"
+    print(status, file=sys.stderr)
+
+def analyze_files(file_paths):
+    files_data = []
+    for path in file_paths:
+        try:
+            with open(path, 'r') as f:
+                files_data.append({'path': path, 'content': f.read()})
+        except Exception as e:
+            print(f"Warning: Could not read {path}: {e}", file=sys.stderr)
+            files_data.append({'path': path, 'error': str(e)})
+    
+    if not files_data:
+        print("Error: No files to analyze", file=sys.stderr)
+        sys.exit(1)
+    
+    queue_size = check_queue()
+    if queue_size > 0:
+        print(f"Queue position: #{queue_size + 1}", file=sys.stderr)
+    print(f"Analyzing {len(files_data)} file(s)...", file=sys.stderr)
+    
+    result = call_api('/analyze', {'files': files_data, 'model': MODEL})
+    
+    if result.get('error'):
+        print(f"Error: {result['error']}", file=sys.stderr)
+        sys.exit(1)
+    
+    print(result['analysis'])
+    status = f"\n# Analyzed in {result['elapsed']}s | Tokens: {result['total_tokens']}"
     if result.get('queue_position'):
         status += f" | Was #{result['queue_position']} in queue"
     print(status, file=sys.stderr)
@@ -271,6 +304,8 @@ if __name__ == '__main__':
         generate_code(sys.argv[2])
     elif command == 'explain-code' and len(sys.argv) == 3:
         explain_code(sys.argv[2])
+    elif command == 'analyze' and len(sys.argv) >= 3:
+        analyze_files(sys.argv[2:])
     elif command == 'chat':
         chat()
     elif command == 'interactive':

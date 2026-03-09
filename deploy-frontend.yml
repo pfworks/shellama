@@ -35,26 +35,6 @@
       loop:
         - "{{ venv_path }}"
         - "{{ html_path }}"
-        - /etc/ansible-tools
-
-    - name: Copy SSL certificates
-      copy:
-        src: "certs/{{ item }}"
-        dest: "/etc/ansible-tools/{{ item }}"
-        mode: '0644'
-      loop:
-        - ca-cert.pem
-        - client-cert.pem
-        - server-cert.pem
-      
-    - name: Copy SSL private keys
-      copy:
-        src: "certs/{{ item }}"
-        dest: "/etc/ansible-tools/{{ item }}"
-        mode: '0600'
-      loop:
-        - client-key.pem
-        - server-key.pem
 
     - name: Create Python virtual environment
       become_user: "{{ app_user }}"

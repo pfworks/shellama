@@ -37,22 +37,6 @@
       loop:
         - "{{ venv_path }}"
         - "{{ html_path }}"
-        - /etc/ansible-tools
-
-    - name: Copy SSL certificates
-      copy:
-        src: "certs/{{ item }}"
-        dest: "/etc/ansible-tools/{{ item }}"
-        mode: '0644'
-      loop:
-        - ca-cert.pem
-        - server-cert.pem
-      
-    - name: Copy SSL private key
-      copy:
-        src: certs/server-key.pem
-        dest: /etc/ansible-tools/server-key.pem
-        mode: '0600'
 
     - name: Install Ollama
       shell: curl -fsSL https://ollama.com/install.sh | sh

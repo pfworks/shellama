@@ -98,7 +98,7 @@ def proxy_request(endpoint, data):
     model = data.get('model', 'codellama:13b')
     backend = get_available_backend(model)
     if not backend:
-        return {'error': f'No backends available that support {model}'}, 503
+        return {'error': f'No backends available that support model {model}. Check backends.json configuration.'}, 200
     
     try:
         response = requests.post(
@@ -107,9 +107,9 @@ def proxy_request(endpoint, data):
             timeout=600
         )
         result = response.json()
-        return result, response.status_code
+        return result, 200
     except Exception as e:
-        return {'error': f'Backend error: {str(e)}'}, 500
+        return {'error': f'Backend error: {str(e)}'}, 200
     finally:
         release_backend(backend)
 
@@ -247,6 +247,13 @@ def chat_endpoint():
     message = request.json.get('message', '')
     model = request.json.get('model', 'codellama:13b')
     result, status = proxy_request('/chat', {'message': message, 'model': model})
+    return jsonify(result), status
+
+@app.route('/analyze', methods=['POST'])
+def analyze_endpoint():
+    files = request.json.get('files', [])
+    model = request.json.get('model', 'codellama:13b')
+    result, status = proxy_request('/analyze', {'files': files, 'model': model})
     return jsonify(result), status
 
 @app.route('/upload', methods=['POST'])

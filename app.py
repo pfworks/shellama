@@ -52,6 +52,8 @@ def worker():
             result = explain_code(task['code'], model)
         elif task_type == 'chat':
             result = chat(task['message'], model)
+        elif task_type == 'analyze':
+            result = analyze_files(task['files'], model)
         else:
             result = generate_playbook(task['commands'], model)
         
@@ -90,6 +92,14 @@ def fallback_to_claude(task, ollama_result):
             prompt = f"Explain this code:\n\n{task['code']}"
         elif task_type == 'chat':
             prompt = task['message']
+        elif task_type == 'analyze':
+            files_content = ""
+            for f in task['files']:
+                if f.get('error'):
+                    files_content += f"\n=== {f['path']} (Error: {f['error']}) ===\n"
+                else:
+                    files_content += f"\n=== {f['path']} ===\n{f['content']}\n"
+            prompt = f"Analyze these files:\n{files_content}"
         else:
             prompt = f"Convert these shell commands into an Ansible playbook. Return ONLY valid YAML:\n\n{task['commands']}"
         
@@ -108,6 +118,8 @@ def fallback_to_claude(task, ollama_result):
             ollama_result['code'] = content
         elif task_type == 'chat':
             ollama_result['response'] = content
+        elif task_type == 'analyze':
+            ollama_result['analysis'] = content
         else:
             ollama_result['playbook'] = content
         
@@ -328,6 +340,48 @@ def chat(message, model='codellama:13b'):
         'total_tokens': response.get('prompt_eval_count', 0) + response.get('eval_count', 0)
     }
 
+def analyze_files(files, model='codellama:13b'):
+    import time
+    
+    try:
+        ollama.show(model)
+    except:
+        return {
+            'analysis': '',
+            'elapsed': 0,
+            'error': f'Model {model} not found. Please run: ollama pull {model}',
+            'prompt_tokens': 0,
+            'response_tokens': 0,
+            'total_tokens': 0
+        }
+    
+    start_time = time.time()
+    
+    files_content = ""
+    for f in files:
+        if f.get('error'):
+            files_content += f"\n=== {f['path']} (Error: {f['error']}) ===\n"
+        else:
+            files_content += f"\n=== {f['path']} ===\n{f['content']}\n"
+    
+    prompt = f"""Analyze these files and provide insights about their purpose, structure, relationships, potential issues, and suggestions for improvement:
+
+{files_content}"""
+
+    response = ollama.chat(model=model, messages=[
+        {'role': 'user', 'content': prompt}
+    ])
+    
+    elapsed = time.time() - start_time
+    
+    return {
+        'analysis': response['message']['content'],
+        'elapsed': round(elapsed, 2),
+        'prompt_tokens': response.get('prompt_eval_count', 0),
+        'response_tokens': response.get('eval_count', 0),
+        'total_tokens': response.get('prompt_eval_count', 0) + response.get('eval_count', 0)
+    }
+
 Thread(target=worker, daemon=True).start()
 
 @app.route('/')
@@ -477,6 +531,28 @@ def chat_endpoint():
     task_id = str(uuid.uuid4())
     event = Event()
     task = {'id': task_id, 'message': message, 'model': model, 'event': event, 'type': 'chat'}
+    task_queue.put(task)
+    
+    event.wait()
+    result = task_results.pop(task_id)
+    
+    if queue_size > 0:
+        result['queue_position'] = queue_size + 1
+    
+    return jsonify(result)
+
+@app.route('/analyze', methods=['POST'])
+def analyze_endpoint():
+    files = request.json.get('files', [])
+    model = request.json.get('model', 'codellama:13b')
+    
+    queue_size = task_queue.qsize()
+    if active_task is not None:
+        queue_size += 1
+    
+    task_id = str(uuid.uuid4())
+    event = Event()
+    task = {'id': task_id, 'files': files, 'model': model, 'event': event, 'type': 'analyze'}
     task_queue.put(task)
     
     event.wait()
