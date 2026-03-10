@@ -2,7 +2,7 @@
 from flask import Flask, request, jsonify, send_from_directory
 import ollama
 from queue import Queue
-from threading import Thread, Event
+from threading import Thread, Event, Lock
 import uuid
 import os
 import requests
@@ -11,6 +11,11 @@ app = Flask(__name__)
 task_queue = Queue()
 active_task = None
 task_results = {}
+
+# Statistics tracking
+total_requests = 0
+total_tokens = 0
+stats_lock = Lock()
 
 # Infisical configuration
 INFISICAL_TOKEN = os.environ.get('INFISICAL_TOKEN', '')
@@ -34,7 +39,7 @@ CLAUDE_API_KEY = get_secret('CLAUDE_API_KEY') or os.environ.get('CLAUDE_API_KEY'
 USE_CLAUDE_FALLBACK = os.environ.get('USE_CLAUDE_FALLBACK', 'true').lower() == 'true'
 
 def worker():
-    global active_task
+    global active_task, total_requests, total_tokens
     while True:
         task = task_queue.get()
         if task is None:
@@ -44,24 +49,36 @@ def worker():
         task_type = task.get('type')
         model = task.get('model', 'codellama:13b')
         
-        if task_type == 'explain':
-            result = explain_playbook(task['playbook'], model)
-        elif task_type == 'generate_code':
-            result = generate_code(task['description'], model)
-        elif task_type == 'explain_code':
-            result = explain_code(task['code'], model)
-        elif task_type == 'chat':
-            result = chat(task['message'], model)
-        elif task_type == 'analyze':
-            result = analyze_files(task['files'], model)
-        else:
-            result = generate_playbook(task['commands'], model)
+        # Increment request counter
+        with stats_lock:
+            total_requests += 1
         
-        # Check if we should fallback to Claude
-        if USE_CLAUDE_FALLBACK and CLAUDE_API_KEY and should_use_claude(result):
-            result = fallback_to_claude(task, result)
+        try:
+            if task_type == 'explain':
+                result = explain_playbook(task['playbook'], model)
+            elif task_type == 'generate_code':
+                result = generate_code(task['description'], model)
+            elif task_type == 'explain_code':
+                result = explain_code(task['code'], model)
+            elif task_type == 'chat':
+                result = chat(task['message'], model)
+            elif task_type == 'analyze':
+                result = analyze_files(task['files'], model)
+            else:
+                result = generate_playbook(task['commands'], model)
+            
+            # Update token counter
+            with stats_lock:
+                total_tokens += result.get('total_tokens', 0)
+            
+            # Check if we should fallback to Claude
+            if USE_CLAUDE_FALLBACK and CLAUDE_API_KEY and should_use_claude(result):
+                result = fallback_to_claude(task, result)
+            
+            task_results[task_id] = result
+        except Exception as e:
+            task_results[task_id] = {'error': f'Task processing failed: {str(e)}'}
         
-        task_results[task_id] = result
         task['event'].set()
         active_task = None
         task_queue.task_done()
@@ -390,13 +407,16 @@ def index():
 
 @app.route('/queue-status')
 def queue_status():
+    global total_requests, total_tokens
     queue_size = task_queue.qsize()
     if active_task is not None:
         queue_size += 1
     
     status = {
         'queue_size': queue_size,
-        'active': active_task is not None
+        'active': active_task is not None,
+        'total_requests': total_requests,
+        'total_tokens': total_tokens
     }
     
     if active_task:
@@ -420,10 +440,15 @@ def generate():
     task_queue.put(task)
     
     event.wait()
-    result = task_results.pop(task_id)
+    result = task_results.pop(task_id, None)
+    
+    if result is None:
+        return jsonify({'error': f'Task {task_id} completed but result was lost'}), 500
     
     if queue_size > 0:
         result['queue_position'] = queue_size + 1
+    result['task_id'] = task_id
+    result['task_id'] = task_id
     
     return jsonify(result)
 
@@ -446,10 +471,14 @@ def upload():
     task_queue.put(task)
     
     event.wait()
-    result = task_results.pop(task_id)
+    result = task_results.pop(task_id, None)
+    
+    if result is None:
+        return jsonify({"error": f"Task {task_id} completed but result was lost"}), 500
     
     if queue_size > 0:
         result['queue_position'] = queue_size + 1
+    result['task_id'] = task_id
     
     return jsonify(result)
 
@@ -468,10 +497,14 @@ def explain():
     task_queue.put(task)
     
     event.wait()
-    result = task_results.pop(task_id)
+    result = task_results.pop(task_id, None)
+    
+    if result is None:
+        return jsonify({"error": f"Task {task_id} completed but result was lost"}), 500
     
     if queue_size > 0:
         result['queue_position'] = queue_size + 1
+    result['task_id'] = task_id
     
     return jsonify(result)
 
@@ -490,10 +523,14 @@ def generate_code_endpoint():
     task_queue.put(task)
     
     event.wait()
-    result = task_results.pop(task_id)
+    result = task_results.pop(task_id, None)
+    
+    if result is None:
+        return jsonify({"error": f"Task {task_id} completed but result was lost"}), 500
     
     if queue_size > 0:
         result['queue_position'] = queue_size + 1
+    result['task_id'] = task_id
     
     return jsonify(result)
 
@@ -512,10 +549,14 @@ def explain_code_endpoint():
     task_queue.put(task)
     
     event.wait()
-    result = task_results.pop(task_id)
+    result = task_results.pop(task_id, None)
+    
+    if result is None:
+        return jsonify({"error": f"Task {task_id} completed but result was lost"}), 500
     
     if queue_size > 0:
         result['queue_position'] = queue_size + 1
+    result['task_id'] = task_id
     
     return jsonify(result)
 
@@ -534,10 +575,14 @@ def chat_endpoint():
     task_queue.put(task)
     
     event.wait()
-    result = task_results.pop(task_id)
+    result = task_results.pop(task_id, None)
+    
+    if result is None:
+        return jsonify({"error": f"Task {task_id} completed but result was lost"}), 500
     
     if queue_size > 0:
         result['queue_position'] = queue_size + 1
+    result['task_id'] = task_id
     
     return jsonify(result)
 
@@ -556,10 +601,14 @@ def analyze_endpoint():
     task_queue.put(task)
     
     event.wait()
-    result = task_results.pop(task_id)
+    result = task_results.pop(task_id, None)
+    
+    if result is None:
+        return jsonify({"error": f"Task {task_id} completed but result was lost"}), 500
     
     if queue_size > 0:
         result['queue_position'] = queue_size + 1
+    result['task_id'] = task_id
     
     return jsonify(result)
 

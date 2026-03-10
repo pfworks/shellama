@@ -31,19 +31,19 @@ BACKENDS = load_backends()
 
 # Model size ordering for comparison
 MODEL_SIZES = {
-    'codellama:7b': 1,
-    'codellama:13b': 2,
-    'codellama:34b': 3,
-    'codellama:70b': 4,
+    'codellama:7b': 2,
+    'codellama:13b': 3,
+    'codellama:34b': 4,
+    'codellama:70b': 5,
     'deepseek-coder:1.3b': 1,
     'deepseek-coder:6.7b': 2,
-    'deepseek-coder:33b': 3,
+    'deepseek-coder:33b': 4,
     'qwen2.5-coder:0.5b': 1,
     'qwen2.5-coder:1.5b': 1,
     'qwen2.5-coder:3b': 1,
     'qwen2.5-coder:7b': 2,
     'qwen2.5-coder:14b': 3,
-    'qwen2.5-coder:32b': 3
+    'qwen2.5-coder:32b': 4
 }
 
 # Track backend availability and queue size
@@ -61,32 +61,45 @@ def get_backend_queue_size(url):
     except:
         return 999
 
-def get_available_backend(requested_model='codellama:13b'):
+def get_available_backend(requested_model='codellama:13b', wait=True, timeout=300):
     """Get backend with lowest weighted queue score that supports the requested model"""
-    with backend_lock:
-        # Update queue sizes
-        for backend in BACKENDS:
-            url = backend['url']
-            if backend_status[url]['available']:
-                backend_status[url]['queue_size'] = get_backend_queue_size(url)
+    import time
+    start_time = time.time()
+    
+    while True:
+        with backend_lock:
+            # Update queue sizes
+            for backend in BACKENDS:
+                url = backend['url']
+                if backend_status[url]['available']:
+                    backend_status[url]['queue_size'] = get_backend_queue_size(url)
+            
+            # Filter backends that support the requested model
+            requested_size = MODEL_SIZES.get(requested_model, 2)
+            available = []
+            for url in backend_status.keys():
+                if backend_status[url]['available']:
+                    max_model = backend_status[url]['max_model']
+                    max_size = MODEL_SIZES.get(max_model, 4)
+                    if requested_size <= max_size:
+                        score = backend_status[url]['queue_size'] - (backend_status[url]['weight'] * 0.1)
+                        available.append((url, score))
+            
+            if available:
+                best_backend = min(available, key=lambda x: x[1])[0]
+                backend_status[best_backend]['available'] = False
+                return best_backend
         
-        # Filter backends that support the requested model
-        requested_size = MODEL_SIZES.get(requested_model, 2)
-        available = []
-        for url in backend_status.keys():
-            if backend_status[url]['available']:
-                max_model = backend_status[url]['max_model']
-                max_size = MODEL_SIZES.get(max_model, 4)
-                if requested_size <= max_size:
-                    score = backend_status[url]['queue_size'] - (backend_status[url]['weight'] * 0.1)
-                    available.append((url, score))
-        
-        if not available:
+        # If no backend available and not waiting, return None
+        if not wait:
             return None
         
-        best_backend = min(available, key=lambda x: x[1])[0]
-        backend_status[best_backend]['available'] = False
-        return best_backend
+        # Check timeout
+        if time.time() - start_time > timeout:
+            return None
+        
+        # Wait a bit before retrying
+        time.sleep(0.5)
 
 def release_backend(url):
     """Mark backend as available"""
@@ -94,22 +107,33 @@ def release_backend(url):
         backend_status[url]['available'] = True
 
 def proxy_request(endpoint, data):
-    """Send request to available backend"""
+    """Send request to available backend with keepalive"""
     model = data.get('model', 'codellama:13b')
     backend = get_available_backend(model)
     if not backend:
         return {'error': f'No backends available that support model {model}. Check backends.json configuration.'}, 200
     
     try:
-        response = requests.post(
+        session = requests.Session()
+        session.headers.update({'Connection': 'keep-alive'})
+        
+        response = session.post(
             f"{backend}{endpoint}", 
             json=data, 
-            timeout=600
+            timeout=3600,
+            stream=False
         )
         result = response.json()
+        
+        # Check if result was lost
+        if result.get('error') and 'result was lost' in result.get('error', ''):
+            return {'error': f"Backend {backend} lost task result. Task may have completed but response was not stored."}, 500
+        
         return result, 200
+    except requests.exceptions.Timeout:
+        return {'error': f'Backend {backend} request timed out after 3600 seconds'}, 500
     except Exception as e:
-        return {'error': f'Backend error: {str(e)}'}, 200
+        return {'error': f'Backend error: {str(e)}'}, 500
     finally:
         release_backend(backend)
 
@@ -162,6 +186,8 @@ def queue_status():
     backends_info = []
     total_queue = 0
     active_count = 0
+    total_requests = 0
+    total_tokens = 0
     
     for backend in BACKENDS:
         url = backend['url']
@@ -179,6 +205,10 @@ def queue_status():
             if is_active:
                 active_count += 1
             
+            # Aggregate stats
+            total_requests += data.get('total_requests', 0)
+            total_tokens += data.get('total_tokens', 0)
+            
             backends_info.append({
                 'url': url,
                 'weight': weight,
@@ -186,7 +216,8 @@ def queue_status():
                 'queue_size': queue_size,
                 'active': is_active,
                 'status': 'online',
-                'active_model': data.get('active_model', 'none')
+                'active_model': data.get('active_model', 'none'),
+                'tokens': data.get('total_tokens', 0)
             })
         except:
             backends_info.append({
@@ -196,7 +227,8 @@ def queue_status():
                 'queue_size': 0,
                 'active': False,
                 'status': 'offline',
-                'active_model': 'none'
+                'active_model': 'none',
+                'tokens': 0
             })
     
     return jsonify({
@@ -204,6 +236,8 @@ def queue_status():
         'active': active_count > 0,
         'active_backends': active_count,
         'total_backends': len(BACKENDS),
+        'total_requests': total_requests,
+        'total_tokens': total_tokens,
         'backends': backends_info,
         'timestamp': time.time()
     })
@@ -253,8 +287,87 @@ def chat_endpoint():
 def analyze_endpoint():
     files = request.json.get('files', [])
     model = request.json.get('model', 'codellama:13b')
-    result, status = proxy_request('/analyze', {'files': files, 'model': model})
-    return jsonify(result), status
+    
+    # If we have multiple files, check if we should process in parallel or sequential
+    if len(files) > 1:
+        # Count available backends that support this model
+        requested_size = MODEL_SIZES.get(model, 2)
+        available_backends = 0
+        for backend in BACKENDS:
+            max_size = MODEL_SIZES.get(backend.get('max_model', 'codellama:70b'), 4)
+            if requested_size <= max_size:
+                available_backends += 1
+        
+        # If only 1 backend, process sequentially to avoid timeout
+        if available_backends <= 1:
+            combined_parts = []
+            total_elapsed = 0
+            total_tokens = 0
+            
+            for idx, file_data in enumerate(files):
+                result, status = proxy_request('/analyze', {'files': [file_data], 'model': model})
+                if result.get('error'):
+                    return jsonify({'error': f"Error processing {file_data.get('path', f'file {idx}')}: {result['error']}"}), 200
+                
+                analysis = result.get('analysis', '')
+                file_path = file_data.get('path', f'File {idx+1}')
+                combined_parts.append(f"--- {file_path} ---\n{analysis}")
+                total_elapsed = max(total_elapsed, result.get('elapsed', 0))
+                total_tokens += result.get('total_tokens', 0)
+            
+            return jsonify({
+                'analysis': "\n\n".join(combined_parts),
+                'elapsed': round(total_elapsed, 2),
+                'total_tokens': total_tokens,
+                'files_processed': len(files),
+                'parallel': False
+            }), 200
+        
+        # Multiple backends available, process in parallel
+        results = []
+        threads = []
+        
+        def process_file(file_data, idx):
+            result, status = proxy_request('/analyze', {'files': [file_data], 'model': model})
+            results.append((idx, result, status))
+        
+        for idx, file_data in enumerate(files):
+            t = Thread(target=process_file, args=(file_data, idx))
+            t.start()
+            threads.append(t)
+        
+        for t in threads:
+            t.join()
+        
+        # Check for errors
+        errors = [r[1].get('error') for r in results if r[1].get('error')]
+        if errors:
+            return jsonify({'error': f"Errors from backends: {'; '.join(errors)}"}), 200
+        
+        # Combine analyses
+        results.sort(key=lambda x: x[0])
+        combined_parts = []
+        for idx, (_, result, _) in enumerate(results, 1):
+            analysis = result.get('analysis', '')
+            file_path = files[idx-1].get('path', f'File {idx}')
+            combined_parts.append(f"--- {file_path} ---\n{analysis}")
+        
+        combined_analysis = "\n\n".join(combined_parts)
+        
+        total_elapsed = max([r[1].get('elapsed', 0) for r in results])
+        total_tokens = sum([r[1].get('total_tokens', 0) for r in results])
+        
+        return jsonify({
+            'analysis': combined_analysis,
+            'elapsed': round(total_elapsed, 2),
+            'total_tokens': total_tokens,
+            'files_processed': len(files),
+            'parallel': True
+        }), 200
+    else:
+        # Single file processing
+        result, status = proxy_request('/analyze', {'files': files, 'model': model})
+        return jsonify(result), status
 
 @app.route('/upload', methods=['POST'])
 def upload():

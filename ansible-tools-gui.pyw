@@ -15,11 +15,13 @@ class AnsibleToolsGUI:
         self.root.geometry("900x850")
         self.config_file = os.path.expanduser('~/.ansible-tools-gui.json')
         self.cert_dir = os.path.expanduser('~/.ansible-tools')
+        self.session_tokens = 0
         
         config = self.load_config()
         self.api_url = tk.StringVar(value=config.get('api_url', os.environ.get('ANSIBLE_TOOLS_API', 'http://localhost:5000')))
         self.api_url.trace_add('write', lambda *args: self.save_config())
-        self.model = tk.StringVar(value='codellama:13b')
+        self.model = tk.StringVar(value=config.get('model', 'codellama:13b'))
+        self.model.trace_add('write', lambda *args: self.save_config())
         self.service = tk.StringVar(value='generate')
         self.dark_mode = tk.BooleanVar(value=config.get('dark_mode', False))
         self.text_color = tk.StringVar(value=config.get('text_color', 'green'))
@@ -56,6 +58,7 @@ class AnsibleToolsGUI:
             with open(self.config_file, 'w') as f:
                 json.dump({
                     'api_url': self.api_url.get(),
+                    'model': self.model.get(),
                     'dark_mode': self.dark_mode.get(),
                     'text_color': self.text_color.get(),
                     'font': self.font_choice.get()
@@ -221,6 +224,10 @@ GitHub: https://github.com/your-repo/ansible-tools
         model_combo.current(2)  # Default to codellama:13b
         model_combo.pack(side=tk.LEFT, padx=5)
         
+        # Token counter
+        self.token_label = ttk.Label(top_frame, text="Session Tokens: 0")
+        self.token_label.pack(side=tk.RIGHT, padx=10)
+        
         # Service selection
         service_frame = ttk.Frame(self.root, padding="10")
         service_frame.pack(fill=tk.X)
@@ -238,6 +245,11 @@ GitHub: https://github.com/your-repo/ansible-tools
         ttk.Radiobutton(service_frame, text="Analyze Files", variable=self.service,
                        value='analyze', command=self.switch_service).pack(side=tk.LEFT, padx=10)
         
+        # Interactive mode checkbox
+        self.interactive_mode = tk.BooleanVar(value=False)
+        ttk.Checkbutton(service_frame, text="Interactive", variable=self.interactive_mode,
+                       command=self.toggle_interactive).pack(side=tk.LEFT, padx=10)
+        
         # Input frame
         input_frame = ttk.LabelFrame(self.root, text="Input", padding="10")
         input_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
@@ -250,6 +262,7 @@ GitHub: https://github.com/your-repo/ansible-tools
         
         ttk.Button(input_buttons, text="Upload File", command=self.upload_file).pack(side=tk.LEFT, padx=5)
         ttk.Button(input_buttons, text="Upload Multiple Files", command=self.upload_multiple_files).pack(side=tk.LEFT, padx=5)
+        ttk.Button(input_buttons, text="Browse Directory", command=self.browse_directory).pack(side=tk.LEFT, padx=5)
         ttk.Button(input_buttons, text="Generate", command=self.generate).pack(side=tk.LEFT, padx=5)
         ttk.Button(input_buttons, text="Clear", command=self.clear_all).pack(side=tk.LEFT, padx=5)
         
@@ -269,9 +282,27 @@ GitHub: https://github.com/your-repo/ansible-tools
         
         ttk.Button(output_buttons, text="Copy", command=self.copy_output).pack(side=tk.LEFT, padx=5)
         ttk.Button(output_buttons, text="Save", command=self.save_output).pack(side=tk.LEFT, padx=5)
+        
+        # Interactive question frame (hidden by default)
+        self.question_frame = ttk.Frame(output_frame)
+        self.question_label = ttk.Label(self.question_frame, text="Ask a follow-up question:")
+        self.question_label.pack(anchor=tk.W)
+        
+        question_input_frame = ttk.Frame(self.question_frame)
+        question_input_frame.pack(fill=tk.X, pady=5)
+        
+        self.question_entry = ttk.Entry(question_input_frame)
+        self.question_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+        self.question_entry.bind('<Return>', lambda e: self.ask_question())
+        
+        ttk.Button(question_input_frame, text="Ask", command=self.ask_question).pack(side=tk.LEFT)
+        
+        # Store files context for interactive mode
+        self.files_context = None
     
     def switch_service(self):
         service = self.service.get()
+        self.files_context = None  # Clear context when switching services
         if service == 'generate':
             self.input_text.delete(1.0, tk.END)
             self.output_text.delete(1.0, tk.END)
@@ -303,6 +334,14 @@ GitHub: https://github.com/your-repo/ansible-tools
             self.root.children['!labelframe'].config(text="Files to Analyze")
             self.root.children['!labelframe2'].config(text="Analysis")
     
+    def toggle_interactive(self):
+        """Show/hide interactive question input"""
+        if self.interactive_mode.get():
+            self.question_frame.pack(fill=tk.X, pady=5)
+        else:
+            self.question_frame.pack_forget()
+            self.files_context = None
+    
     def upload_file(self):
         filename = filedialog.askopenfilename(
             title="Select file",
@@ -325,6 +364,16 @@ GitHub: https://github.com/your-repo/ansible-tools
             self.input_text.delete(1.0, tk.END)
             for filename in filenames:
                 self.input_text.insert(tk.END, f"{filename}\n")
+    
+    def browse_directory(self):
+        directory = filedialog.askdirectory(title="Select directory to analyze")
+        if directory:
+            self.input_text.delete(1.0, tk.END)
+            # Recursively find all files
+            for root, dirs, files in os.walk(directory):
+                for file in files:
+                    filepath = os.path.join(root, file)
+                    self.input_text.insert(tk.END, f"{filepath}\n")
     
     def get_model_value(self):
         model_str = self.model.get().lower()
@@ -421,6 +470,10 @@ GitHub: https://github.com/your-repo/ansible-tools
                         files_data.append({'path': path, 'error': str(e)})
                 data = {'files': files_data, 'model': model}
                 output_key = 'analysis'
+                
+                # Store context for interactive mode
+                if self.interactive_mode.get():
+                    self.files_context = files_data
             else:  # explain-code
                 endpoint = '/explain-code'
                 data = {'code': input_content, 'model': model}
@@ -446,6 +499,11 @@ GitHub: https://github.com/your-repo/ansible-tools
                 output = result.get(output_key, '')
                 self.root.after(0, lambda: self.output_text.delete(1.0, tk.END))
                 self.root.after(0, lambda: self.output_text.insert(1.0, output))
+                
+                # Update session token counter
+                tokens = result.get('total_tokens', 0)
+                self.session_tokens += tokens
+                self.root.after(0, lambda: self.token_label.config(text=f"Session Tokens: {self.session_tokens:,}"))
                 
                 status_msg = f"Generated in {result['elapsed']}s | Tokens: {result['total_tokens']}"
                 if result.get('queue_position'):
@@ -490,6 +548,67 @@ GitHub: https://github.com/your-repo/ansible-tools
         self.input_text.delete(1.0, tk.END)
         self.output_text.delete(1.0, tk.END)
         self.status_label.config(text="")
+        self.files_context = None
+        self.question_entry.delete(0, tk.END)
+    
+    def ask_question(self):
+        """Ask a follow-up question in interactive mode"""
+        if not self.files_context:
+            messagebox.showwarning("Warning", "No files analyzed yet. Run analysis first with Interactive mode enabled.")
+            return
+        
+        question = self.question_entry.get().strip()
+        if not question:
+            return
+        
+        # Run in thread
+        thread = threading.Thread(target=self._ask_question_thread, args=(question,))
+        thread.daemon = True
+        thread.start()
+    
+    def _ask_question_thread(self, question):
+        try:
+            self.root.after(0, lambda: self.status_label.config(text="Asking question...", foreground="blue"))
+            
+            # Build context with files
+            files_context = "\n\n".join([f"=== {f['path']} ===\n{f['content']}" for f in self.files_context if 'content' in f])
+            full_message = f"I have these files:\n\n{files_context}\n\nQuestion: {question}"
+            
+            model = self.get_model_value()
+            ssl_context = self.get_ssl_config()
+            
+            data = {'message': full_message, 'model': model}
+            json_data = json.dumps(data).encode('utf-8')
+            req = urllib.request.Request(
+                f"{self.api_url.get()}/chat",
+                data=json_data,
+                headers={'Content-Type': 'application/json'}
+            )
+            
+            with urllib.request.urlopen(req, context=ssl_context) as response:
+                result = json.loads(response.read().decode())
+            
+            if result.get('error'):
+                error_msg = f"Error: {result['error']}"
+                self.root.after(0, lambda: self.status_label.config(text=error_msg, foreground="red"))
+            else:
+                # Append Q&A to output
+                qa_text = f"\n\n--- Question ---\n{question}\n\n--- Answer ---\n{result['response']}"
+                self.root.after(0, lambda: self.output_text.insert(tk.END, qa_text))
+                self.root.after(0, lambda: self.output_text.see(tk.END))
+                self.root.after(0, lambda: self.question_entry.delete(0, tk.END))
+                
+                # Update session token counter
+                tokens = result.get('total_tokens', 0)
+                self.session_tokens += tokens
+                self.root.after(0, lambda: self.token_label.config(text=f"Session Tokens: {self.session_tokens:,}"))
+                
+                status_msg = f"Answered in {result['elapsed']}s | Tokens: {result['total_tokens']}"
+                self.root.after(0, lambda: self.status_label.config(text=status_msg, foreground="green"))
+        
+        except Exception as e:
+            error_msg = f"Error: {str(e)}"
+            self.root.after(0, lambda: self.status_label.config(text=error_msg, foreground="red"))
 
 if __name__ == '__main__':
     root = tk.Tk()

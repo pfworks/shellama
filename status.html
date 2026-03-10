@@ -42,6 +42,24 @@
             border-radius: 5px;
             height: 400px;
         }
+        .time-range-selector {
+            text-align: center;
+            margin: 10px 0;
+        }
+        .time-range-btn {
+            background: #2b2b2b;
+            color: #00ff00;
+            border: 2px solid #00ff00;
+            padding: 8px 16px;
+            margin: 0 5px;
+            cursor: pointer;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+        }
+        .time-range-btn.active {
+            background: #00ff00;
+            color: #000;
+        }
         .backends {
             margin-top: 30px;
         }
@@ -101,6 +119,16 @@
         <div class="summary">
             <div class="summary-item">Total Queue: <span id="total-queue">-</span></div>
             <div class="summary-item">Active Backends: <span id="active-backends">-</span> / <span id="total-backends">-</span></div>
+            <div class="summary-item">Total Requests: <span id="total-requests">-</span></div>
+            <div class="summary-item">Total Tokens: <span id="total-tokens">-</span></div>
+        </div>
+
+        <div class="time-range-selector">
+            <button class="time-range-btn active" onclick="setTimeRange('hour')">Hour</button>
+            <button class="time-range-btn" onclick="setTimeRange('day')">Day</button>
+            <button class="time-range-btn" onclick="setTimeRange('week')">Week</button>
+            <button class="time-range-btn" onclick="setTimeRange('month')">Month</button>
+            <button class="time-range-btn" onclick="setTimeRange('year')">Year</button>
         </div>
 
         <div class="chart-container">
@@ -119,10 +147,26 @@
 
     <script>
         const colors = ['#00ff00', '#00ffff', '#ff00ff', '#ffff00', '#ff8800', '#0088ff'];
-        const maxDataPoints = 60;
+        let timeRange = 'hour';
+        const timeRanges = {
+            hour: { points: 60, interval: 2000 },
+            day: { points: 288, interval: 300000 },
+            week: { points: 336, interval: 1800000 },
+            month: { points: 360, interval: 7200000 },
+            year: { points: 365, interval: 86400000 }
+        };
+        
         const chartData = {
             labels: [],
             datasets: []
+        };
+        
+        const historicalData = {
+            hour: { labels: [], queue: {} },
+            day: { labels: [], queue: {} },
+            week: { labels: [], queue: {} },
+            month: { labels: [], queue: {} },
+            year: { labels: [], queue: {} }
         };
 
         const ctx = document.getElementById('queueChart').getContext('2d');
@@ -156,6 +200,32 @@
                 }
             }
         });
+        
+        function setTimeRange(range) {
+            timeRange = range;
+            document.querySelectorAll('.time-range-btn').forEach(btn => {
+                btn.classList.remove('active');
+                if (btn.textContent.toLowerCase() === range) {
+                    btn.classList.add('active');
+                }
+            });
+            
+            const data = historicalData[range];
+            chartData.labels.splice(0, chartData.labels.length, ...data.labels);
+            
+            chartData.datasets.length = 0;
+            Object.keys(data.queue).forEach((url, idx) => {
+                chartData.datasets.push({
+                    label: url,
+                    data: [...data.queue[url]],
+                    borderColor: colors[idx % colors.length],
+                    backgroundColor: colors[idx % colors.length] + '33',
+                    tension: 0.4
+                });
+            });
+            
+            chart.update('none');
+        }
 
         function updateStatus() {
             fetch('/queue-status')
@@ -164,34 +234,36 @@
                     document.getElementById('total-queue').textContent = data.queue_size;
                     document.getElementById('active-backends').textContent = data.active_backends;
                     document.getElementById('total-backends').textContent = data.total_backends;
+                    document.getElementById('total-requests').textContent = data.total_requests || 0;
+                    document.getElementById('total-tokens').textContent = (data.total_tokens || 0).toLocaleString();
 
-                    // Update chart
-                    const now = new Date().toLocaleTimeString();
-                    chartData.labels.push(now);
-                    if (chartData.labels.length > maxDataPoints) {
-                        chartData.labels.shift();
-                    }
-
-                    // Update or create datasets for each backend
-                    data.backends.forEach((backend, idx) => {
-                        let dataset = chartData.datasets.find(ds => ds.label === backend.url);
-                        if (!dataset) {
-                            dataset = {
-                                label: backend.url,
-                                data: [],
-                                borderColor: colors[idx % colors.length],
-                                backgroundColor: colors[idx % colors.length] + '33',
-                                tension: 0.4
-                            };
-                            chartData.datasets.push(dataset);
+                    const now = new Date();
+                    const timeLabel = now.toLocaleTimeString();
+                    
+                    // Update all time ranges
+                    Object.keys(historicalData).forEach(range => {
+                        const maxPoints = timeRanges[range].points;
+                        const rangeData = historicalData[range];
+                        
+                        rangeData.labels.push(timeLabel);
+                        if (rangeData.labels.length > maxPoints) {
+                            rangeData.labels.shift();
                         }
-                        dataset.data.push(backend.queue_size);
-                        if (dataset.data.length > maxDataPoints) {
-                            dataset.data.shift();
-                        }
+                        
+                        data.backends.forEach((backend, idx) => {
+                            if (!rangeData.queue[backend.url]) {
+                                rangeData.queue[backend.url] = [];
+                            }
+                            rangeData.queue[backend.url].push(backend.queue_size);
+                            
+                            if (rangeData.queue[backend.url].length > maxPoints) {
+                                rangeData.queue[backend.url].shift();
+                            }
+                        });
                     });
-
-                    chart.update('none');
+                    
+                    // Update current view
+                    setTimeRange(timeRange);
 
                     // Update backend list
                     const backendList = document.getElementById('backend-list');

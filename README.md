@@ -29,6 +29,7 @@ Local LLM-powered tool for converting shell commands to Ansible playbooks, expla
 **Architecture:**
 - Standalone or distributed deployment
 - Load balancing across multiple backends
+- Parallel file processing across backends
 - Request queuing with position tracking
 - Optional Claude API fallback
 - Fully offline capable
@@ -154,7 +155,7 @@ sudo systemctl restart ansible-ollama-frontend
 
 **6. Access:**
 - Web UI: http://192.168.1.229:5000
-- Status: http://192.168.1.229:5000/status.html
+- Status: http://192.168.1.229:5000/status.html (includes queue and token graphs with day/week/month/year views)
 
 ### macOS-Specific Notes
 
@@ -195,7 +196,7 @@ Access at http://your-server:5000
 3. Description → Code: Generate code
 4. Code → Explanation: Explain code
 5. Chat: General questions
-6. Analyze Files: Multi-file analysis
+6. Analyze Files: Multi-file analysis (supports directories)
 
 ### Python GUI
 
@@ -212,6 +213,8 @@ python3 ansible-tools-gui.pyw
 - Dark mode with color themes
 - Multiple font options
 - File upload (single or multiple)
+- Directory browser for analyzing entire folders
+- Interactive mode for follow-up questions
 - Error log viewer
 - Persistent settings
 
@@ -236,6 +239,15 @@ ansible-tools explain-code script.py
 
 # Analyze files
 ansible-tools analyze file1.py file2.yml file3.txt
+
+# Analyze entire directory (recursively)
+ansible-tools analyze /path/to/directory
+
+# Mix files and directories
+ansible-tools analyze file1.py /path/to/directory file2.yml
+
+# Interactive analysis with follow-up questions
+ansible-tools analyze-interactive playbook.yml
 
 # Interactive chat
 ansible-tools chat
@@ -391,6 +403,15 @@ sudo ufw allow 5000/tcp
 
 ## Troubleshooting
 
+### Request timeout after 10 minutes
+
+**Timeout increased to 1 hour:**
+- Frontend to backend timeout: 3600 seconds
+- Keepalive connections prevent drops
+- Long-running requests (large file analysis) now supported
+- Unique task IDs track each request
+- Error returned if task completes but result is lost
+
 ### Backend not responding
 
 **Check service:**
@@ -522,6 +543,12 @@ options={'num_ctx': 2048}  # Default is 4096
 1. Deploy multiple backend servers
 2. Update backends.json on frontend
 3. Restart frontend service
+
+**Benefits of multiple backends:**
+- Load balancing across servers
+- Parallel file processing (analyze multiple files simultaneously)
+- Higher throughput
+- Automatic failover
 
 **Vertical scaling:**
 - Add more CPU cores
