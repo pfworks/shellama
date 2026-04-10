@@ -51,9 +51,10 @@ def periodic_save_stats():
 load_stats()
 Thread(target=periodic_save_stats, daemon=True).start()
 
-# OpenRouter configuration
+# Cloud fallback configuration (OpenRouter or LiteLLM)
 OPENROUTER_API_KEY = os.environ.get('OPENROUTER_API_KEY', '')
 OPENROUTER_MODEL = os.environ.get('OPENROUTER_MODEL', 'anthropic/claude-3.5-sonnet')
+OPENROUTER_URL = os.environ.get('OPENROUTER_URL', 'https://openrouter.ai/api/v1/chat/completions')
 USE_CLOUD_FALLBACK = os.environ.get('USE_CLOUD_FALLBACK', 'false').lower() == 'true'
 
 def worker():
@@ -145,7 +146,7 @@ def fallback_to_openrouter(task, ollama_result):
             prompt = f"Convert these shell commands into an Ansible playbook. Return ONLY valid YAML:\n\n{task['commands']}"
 
         resp = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
+            OPENROUTER_URL,
             headers={
                 "Authorization": f"Bearer {OPENROUTER_API_KEY}",
                 "Content-Type": "application/json"

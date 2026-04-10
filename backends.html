@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SheLLama - Backends</title>
+    <style>
+        body { font-family: 'Courier New', monospace; background: #1e1e1e; color: #00ff00; padding: 20px; margin: 0; }
+        .container { max-width: 1400px; margin: 0 auto; }
+        h1 { text-align: center; border-bottom: 2px solid #00ff00; padding-bottom: 10px; }
+        .nav { text-align: center; margin: 20px 0; }
+        .nav a { color: #00ff00; border: 2px solid #00ff00; padding: 10px 24px; margin: 0 5px; text-decoration: none; border-radius: 3px; font-family: 'Courier New', monospace; font-size: 16px; }
+        .nav a.active { background: #00ff00; color: #000; }
+        .nav a:hover { background: #00ff0033; }
+        a { color: #00ff00; }
+        .backend { background: #2b2b2b; border: 2px solid #00ff00; padding: 15px; margin: 10px 0; border-radius: 5px; }
+        .backend.offline { border-color: #ff0000; color: #ff0000; }
+        .backend-header { font-size: 20px; font-weight: bold; margin-bottom: 10px; }
+        .backend-info { margin: 5px 0; }
+        .strength-bar { display: inline-block; height: 14px; border-radius: 3px; vertical-align: middle; }
+        .strength-label { display: inline-block; min-width: 80px; text-align: center; padding: 2px 8px; border-radius: 3px; font-size: 12px; font-weight: bold; }
+        .hw-stats { display: flex; gap: 30px; margin: 8px 0; flex-wrap: wrap; }
+        .hw-stat { font-size: 14px; }
+        .hw-stat .label { opacity: 0.7; }
+        .status-badge { display: inline-block; padding: 3px 10px; border-radius: 3px; font-size: 14px; margin-left: 10px; }
+        .status-online { background: #00ff00; color: #000; }
+        .status-offline { background: #ff0000; color: #fff; }
+        .status-active { background: #ffff00; color: #000; }
+        .stop-btn { background: #ff0000; color: #fff; border: 2px solid #ff0000; padding: 6px 16px; cursor: pointer; border-radius: 3px; font-family: 'Courier New', monospace; font-weight: bold; font-size: 13px; }
+        .stop-btn:hover { background: #cc0000; border-color: #cc0000; }
+        .stop-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+        .stop-all-bar { text-align: center; margin: 15px 0; }
+        .stop-all-btn { background: #ff0000; color: #fff; border: 2px solid #ff0000; padding: 10px 30px; cursor: pointer; border-radius: 3px; font-family: 'Courier New', monospace; font-weight: bold; font-size: 16px; }
+        .stop-all-btn:hover { background: #cc0000; border-color: #cc0000; }
+        .task-info { background: #1a1a1a; border: 1px solid #555; padding: 8px 12px; margin-top: 8px; border-radius: 3px; font-size: 13px; }
+        .task-info .task-label { opacity: 0.6; }
+        .refresh-info { text-align: center; margin-top: 20px; font-size: 14px; opacity: 0.7; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>SheLLama - Backends</h1>
+
+        <div class="nav">
+            <a href="/status">Overview</a>
+            <a href="/backends" class="active">Backends</a>
+            <a href="/stats">Stats</a>
+            <a href="/">Main</a>
+        </div>
+
+        <div class="stop-all-bar">
+            <button class="stop-all-btn" onclick="stopAll()">⛔ STOP ALL BACKENDS</button>
+        </div>
+        <div id="backend-list"></div>
+
+        <div class="refresh-info">Auto-refreshing every 2 seconds</div>
+    </div>
+
+    <script>
+        function getStrength(backend) {
+            const modelSizes = {
+                'qwen2.5-coder:0.5b': 0.5, 'qwen2.5-coder:1.5b': 1.5, 'qwen2.5-coder:3b': 3,
+                'qwen2.5-coder:7b': 7, 'qwen2.5-coder:14b': 14, 'qwen2.5-coder:32b': 32,
+                'deepseek-coder:1.3b': 1.3, 'deepseek-coder:6.7b': 6.7, 'deepseek-coder:33b': 33,
+                'codellama:7b': 7, 'codellama:13b': 13, 'codellama:34b': 34, 'codellama:70b': 70
+            };
+            const ram = backend.ram_total_gb || 0;
+            const maxModelSize = modelSizes[backend.max_model] || 7;
+            const archMultiplier = backend.cpu_arch === 'arm64' ? 3.0 : 1.0;
+            const score = ((ram / 128) * 50 + (maxModelSize / 70) * 50) * archMultiplier;
+            return Math.min(Math.round(score), 100);
+        }
+
+        function strengthColor(pct) {
+            if (pct >= 70) return '#00ff00';
+            if (pct >= 40) return '#ffff00';
+            return '#ff8800';
+        }
+
+        function strengthLabel(pct) {
+            if (pct >= 70) return 'Strong';
+            if (pct >= 40) return 'Medium';
+            return 'Light';
+        }
+
+        function updateBackends() {
+            fetch('/queue-status').then(r => r.json()).then(data => {
+                const backendList = document.getElementById('backend-list');
+                backendList.innerHTML = '';
+
+                data.backends.forEach(backend => {
+                    const div = document.createElement('div');
+                    div.className = 'backend' + (backend.status === 'offline' ? ' offline' : '');
+
+                    let statusBadge = backend.status === 'online' ?
+                        '<span class="status-badge status-online">ONLINE</span>' :
+                        '<span class="status-badge status-offline">OFFLINE</span>';
+
+                    let activeBadge = backend.active ?
+                        '<span class="status-badge status-active">PROCESSING</span>' : '';
+
+                    let modelInfo = backend.active_model !== 'none' ?
+                        ` | Active Model: ${backend.active_model}` : '';
+
+                    const strength = getStrength(backend);
+                    const sColor = strengthColor(strength);
+                    const sLabel = strengthLabel(strength);
+
+                    const ramUsed = backend.ram_total_gb - backend.ram_available_gb;
+                    const ramPct = backend.ram_total_gb > 0 ? Math.round((ramUsed / backend.ram_total_gb) * 100) : 0;
+                    const cpuPct = Math.round(backend.cpu_percent || 0);
+
+                    let taskHtml = '';
+                    if (backend.active && backend.active_summary) {
+                        const client = backend.active_client || 'unknown';
+                        const agent = backend.active_agent || '';
+                        const shortAgent = agent.length > 60 ? agent.substring(0, 60) + '...' : agent;
+                        taskHtml = `
+                            <div class="task-info">
+                                <span class="task-label">Task:</span> ${backend.active_summary}<br>
+                                <span class="task-label">Client:</span> ${client}
+                                ${shortAgent ? ' <span class="task-label">Agent:</span> ' + shortAgent : ''}
+                            </div>`;
+                    }
+
+                    const stopBtn = backend.status === 'online' ?
+                        `<button class="stop-btn" onclick="stopBackend('${backend.url}')" ${!backend.active ? 'disabled' : ''}>⛔ Stop</button>` : '';
+
+                    div.innerHTML = `
+                        <div class="backend-header">
+                            ${backend.url}
+                            ${statusBadge}
+                            ${activeBadge}
+                            ${stopBtn}
+                        </div>
+                        <div class="backend-info">
+                            Strength: <span class="strength-label" style="background:${sColor};color:#000;">${sLabel} (${strength}%)</span>
+                            <span class="strength-bar" style="width:${strength * 2}px;background:${sColor};"></span>
+                        </div>
+                        <div class="hw-stats">
+                            <div class="hw-stat"><span class="label">CPU:</span> ${cpuPct}% (${backend.cpu_count || '?'}c ${backend.cpu_arch || 'unknown'} ${backend.cpu_freq_mhz ? (backend.cpu_freq_mhz/1000).toFixed(1)+'GHz' : ''})</div>
+                            <div class="hw-stat"><span class="label">RAM:</span> ${ramUsed.toFixed(1)} / ${backend.ram_total_gb} GB (${ramPct}%)</div>
+                            <div class="hw-stat"><span class="label">Weight:</span> ${backend.weight}</div>
+                            <div class="hw-stat"><span class="label">Max Model:</span> ${backend.max_model}</div>
+                        </div>
+                        <div class="backend-info">Queue Size: ${backend.queue_size}${modelInfo}</div>
+                        ${taskHtml}
+                    `;
+                    backendList.appendChild(div);
+                });
+            }).catch(() => {});
+        }
+
+        function stopBackend(url) {
+            if (!confirm('Stop processing on ' + url + '?')) return;
+            fetch('/stop-backend', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({url: url})
+            }).then(r => r.json()).then(data => {
+                alert('Stop sent to ' + url + ': ' + JSON.stringify(data));
+                updateBackends();
+            }).catch(e => alert('Error: ' + e));
+        }
+
+        function stopAll() {
+            if (!confirm('Stop processing on ALL backends?')) return;
+            fetch('/stop-all', {method: 'POST'})
+                .then(r => r.json())
+                .then(data => {
+                    const msgs = Object.entries(data).map(([url, r]) =>
+                        url.replace(/^https?:\/\//, '') + ': ' + (r.error || 'stopped'));
+                    alert(msgs.join('\n'));
+                    updateBackends();
+                }).catch(e => alert('Error: ' + e));
+        }
+
+        updateBackends();
+        setInterval(updateBackends, 2000);
+    </script>
+</body>
+</html>

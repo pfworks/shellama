@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SheLLama - Stats</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: 'Courier New', monospace; background: #1e1e1e; color: #00ff00; padding: 20px; margin: 0; }
+        .container { max-width: 1400px; margin: 0 auto; }
+        h1 { text-align: center; border-bottom: 2px solid #00ff00; padding-bottom: 10px; }
+        .nav { text-align: center; margin: 20px 0; }
+        .nav a { color: #00ff00; border: 2px solid #00ff00; padding: 10px 24px; margin: 0 5px; text-decoration: none; border-radius: 3px; font-family: 'Courier New', monospace; font-size: 16px; }
+        .nav a.active { background: #00ff00; color: #000; }
+        .nav a:hover { background: #00ff0033; }
+        a { color: #00ff00; }
+        .chart-container { background: #2b2b2b; border: 2px solid #00ff00; padding: 20px; margin: 20px 0; border-radius: 5px; height: 400px; }
+        .time-range-selector { text-align: center; margin: 10px 0; }
+        .time-range-btn { background: #2b2b2b; color: #00ff00; border: 2px solid #00ff00; padding: 8px 16px; margin: 0 5px; cursor: pointer; border-radius: 3px; font-family: 'Courier New', monospace; }
+        .time-range-btn.active { background: #00ff00; color: #000; }
+        .refresh-info { text-align: center; margin-top: 20px; font-size: 14px; opacity: 0.7; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>SheLLama - Stats</h1>
+
+        <div class="nav">
+            <a href="/status">Overview</a>
+            <a href="/backends">Backends</a>
+            <a href="/stats" class="active">Stats</a>
+            <a href="/">Main</a>
+        </div>
+
+        <div class="time-range-selector">
+            <button class="time-range-btn active" onclick="setTimeRange('hour')">Hour</button>
+            <button class="time-range-btn" onclick="setTimeRange('day')">Day</button>
+            <button class="time-range-btn" onclick="setTimeRange('week')">Week</button>
+            <button class="time-range-btn" onclick="setTimeRange('month')">Month</button>
+            <button class="time-range-btn" onclick="setTimeRange('year')">Year</button>
+        </div>
+
+        <div class="chart-container">
+            <canvas id="queueChart"></canvas>
+        </div>
+
+        <div class="chart-container">
+            <canvas id="ipTokenChart"></canvas>
+        </div>
+
+        <div style="display:flex;gap:20px;margin:20px 0;">
+            <div class="chart-container" style="flex:1;">
+                <canvas id="usageByClientChart"></canvas>
+            </div>
+            <div class="chart-container" style="flex:1;">
+                <canvas id="usageByTaskChart"></canvas>
+            </div>
+        </div>
+
+        <div class="refresh-info">Auto-refreshing every 10 seconds</div>
+    </div>
+
+    <script>
+        const colors = ['#00ff00', '#00ffff', '#ff00ff', '#ffff00', '#ff8800', '#0088ff', '#ff4444', '#44ff44', '#4444ff', '#ff44ff'];
+        let timeRange = 'hour';
+        const timeRanges = {
+            hour: { points: 60, interval: 2000 },
+            day: { points: 288, interval: 300000 },
+            week: { points: 336, interval: 1800000 },
+            month: { points: 360, interval: 7200000 },
+            year: { points: 365, interval: 86400000 }
+        };
+
+        const chartData = { labels: [], datasets: [] };
+        const historicalData = {
+            hour: { labels: [], queue: {} },
+            day: { labels: [], queue: {} },
+            week: { labels: [], queue: {} },
+            month: { labels: [], queue: {} },
+            year: { labels: [], queue: {} }
+        };
+
+        const ipTokenData = { labels: [], datasets: [] };
+        const ipTokenHistory = {};
+
+        const lineOpts = (title) => ({
+            responsive: true, maintainAspectRatio: false,
+            scales: {
+                y: { beginAtZero: true, ticks: { color: '#00ff00' }, grid: { color: '#333' } },
+                x: { ticks: { color: '#00ff00', maxTicksLimit: 10 }, grid: { color: '#333' } }
+            },
+            plugins: {
+                legend: { labels: { color: '#00ff00' } },
+                title: { display: true, text: title, color: '#00ff00', font: { size: 16 } }
+            }
+        });
+
+        const chart = new Chart(document.getElementById('queueChart').getContext('2d'), {
+            type: 'line', data: chartData, options: lineOpts('Queue Size Over Time')
+        });
+
+        const ipChartOpts = lineOpts('Token Usage  —  🖥 Client IP (solid)  ·  ⚙ Backend Server (dashed)');
+        ipChartOpts.scales.y.title = { display: true, text: 'Tokens', color: '#00ff00' };
+        const ipChart = new Chart(document.getElementById('ipTokenChart').getContext('2d'), {
+            type: 'line', data: ipTokenData, options: ipChartOpts
+        });
+
+        const barOpts = (title) => ({
+            responsive: true, maintainAspectRatio: false,
+            scales: {
+                y: { beginAtZero: true, ticks: { color: '#00ff00' }, grid: { color: '#333' }, title: { display: true, text: 'Tokens', color: '#00ff00' }, position: 'left' },
+                y1: { beginAtZero: true, ticks: { color: '#00ffff' }, grid: { drawOnChartArea: false }, title: { display: true, text: 'Requests', color: '#00ffff' }, position: 'right' },
+                x: { ticks: { color: '#00ff00' }, grid: { color: '#333' } }
+            },
+            plugins: {
+                legend: { labels: { color: '#00ff00' } },
+                title: { display: true, text: title, color: '#00ff00', font: { size: 16 } }
+            }
+        });
+
+        const clientChart = new Chart(document.getElementById('usageByClientChart').getContext('2d'), {
+            type: 'bar', data: { labels: [], datasets: [
+                { label: 'Tokens', data: [], backgroundColor: [], yAxisID: 'y' },
+                { label: 'Requests', data: [], backgroundColor: [], yAxisID: 'y1' }
+            ] }, options: barOpts('Usage by Client')
+        });
+        const taskChart = new Chart(document.getElementById('usageByTaskChart').getContext('2d'), {
+            type: 'bar', data: { labels: [], datasets: [
+                { label: 'Tokens', data: [], backgroundColor: [], yAxisID: 'y' },
+                { label: 'Requests', data: [], backgroundColor: [], yAxisID: 'y1' }
+            ] }, options: barOpts('Usage by Task')
+        });
+
+        function setTimeRange(range) {
+            timeRange = range;
+            document.querySelectorAll('.time-range-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.textContent.toLowerCase() === range);
+            });
+
+            const data = historicalData[range];
+            chartData.labels.splice(0, chartData.labels.length, ...data.labels);
+            chartData.datasets.length = 0;
+            Object.keys(data.queue).forEach((url, idx) => {
+                const shortUrl = url.replace(/^https?:\/\//, '').replace(/:\d+$/, '');
+                chartData.datasets.push({
+                    label: shortUrl, data: [...data.queue[url]],
+                    borderColor: colors[idx % colors.length], backgroundColor: colors[idx % colors.length] + '33', tension: 0.4
+                });
+            });
+            chart.update('none');
+            updateIpTokenChart(range);
+        }
+
+        function updateIpTokenChart(range) {
+            const rangeMs = { hour: 3600000, day: 86400000, week: 604800000, month: 2592000000, year: 31536000000 };
+            const cutoff = (Date.now() - rangeMs[range]) / 1000;
+
+            ipTokenData.labels = [];
+            ipTokenData.datasets = [];
+
+            const backendKeys = Object.keys(ipTokenHistory).filter(k => k.startsWith('backend:'));
+            const ipKeys = Object.keys(ipTokenHistory).filter(k => !k.startsWith('backend:'));
+
+            [...ipKeys, ...backendKeys].forEach((key, idx) => {
+                const entries = ipTokenHistory[key].filter(e => e.timestamp >= cutoff);
+                if (entries.length === 0) return;
+
+                const isBackend = key.startsWith('backend:');
+                const label = isBackend ? '⚙ ' + key.replace('backend:', '').replace(/^https?:\/\//, '').replace(/:\d+$/, '') : '🖥 ' + key;
+
+                let cumulative = 0;
+                const dataPoints = [], labels = [];
+                entries.forEach(e => {
+                    cumulative += e.tokens;
+                    labels.push(new Date(e.timestamp * 1000).toLocaleTimeString());
+                    dataPoints.push(cumulative);
+                });
+
+                if (labels.length > ipTokenData.labels.length) ipTokenData.labels = labels;
+
+                ipTokenData.datasets.push({
+                    label, data: dataPoints,
+                    borderColor: colors[idx % colors.length], backgroundColor: colors[idx % colors.length] + '33',
+                    borderDash: isBackend ? [6, 3] : [], borderWidth: isBackend ? 3 : 2, tension: 0.4
+                });
+            });
+            ipChart.update('none');
+        }
+
+        function fetchIpTokens() {
+            fetch('/ip-tokens').then(r => r.json()).then(data => {
+                Object.keys(data).forEach(ip => { ipTokenHistory[ip] = data[ip]; });
+                updateIpTokenChart(timeRange);
+            }).catch(() => {});
+        }
+
+        function fetchUsageStats() {
+            fetch('/usage-stats').then(r => r.json()).then(data => {
+                const clients = Object.entries(data.by_client || {}).sort((a, b) => b[1].tokens - a[1].tokens);
+                clientChart.data.labels = clients.map(c => c[0]);
+                clientChart.data.datasets[0].data = clients.map(c => c[1].tokens);
+                clientChart.data.datasets[0].backgroundColor = clients.map((_, i) => colors[i % colors.length] + 'cc');
+                clientChart.data.datasets[1].data = clients.map(c => c[1].requests);
+                clientChart.data.datasets[1].backgroundColor = clients.map((_, i) => colors[i % colors.length] + '55');
+                clientChart.update('none');
+
+                const tasks = Object.entries(data.by_task || {}).sort((a, b) => b[1].requests - a[1].requests);
+                taskChart.data.labels = tasks.map(t => t[0]);
+                taskChart.data.datasets[0].data = tasks.map(t => t[1].tokens);
+                taskChart.data.datasets[0].backgroundColor = tasks.map((_, i) => colors[i % colors.length] + 'cc');
+                taskChart.data.datasets[1].data = tasks.map(t => t[1].requests);
+                taskChart.data.datasets[1].backgroundColor = tasks.map((_, i) => colors[i % colors.length] + '55');
+                taskChart.update('none');
+            }).catch(() => {});
+        }
+
+        function fetchQueueStatus() {
+            fetch('/queue-status').then(r => r.json()).then(data => {
+                const now = new Date();
+                const timeLabel = now.toLocaleTimeString();
+                Object.keys(historicalData).forEach(range => {
+                    const maxPoints = timeRanges[range].points;
+                    const rd = historicalData[range];
+                    rd.labels.push(timeLabel);
+                    if (rd.labels.length > maxPoints) rd.labels.shift();
+                    data.backends.forEach(backend => {
+                        if (!rd.queue[backend.url]) rd.queue[backend.url] = [];
+                        rd.queue[backend.url].push(backend.queue_size);
+                        if (rd.queue[backend.url].length > maxPoints) rd.queue[backend.url].shift();
+                    });
+                });
+                setTimeRange(timeRange);
+            }).catch(() => {});
+        }
+
+        function loadQueueHistory() {
+            fetch('/queue-history').then(r => r.json()).then(data => {
+                Object.keys(data).forEach(url => {
+                    const entries = data[url];
+                    Object.keys(historicalData).forEach(range => {
+                        const rangeMs = { hour: 3600, day: 86400, week: 604800, month: 2592000, year: 31536000 };
+                        const cutoff = (Date.now() / 1000) - rangeMs[range];
+                        const maxPoints = timeRanges[range].points;
+                        if (!historicalData[range].queue[url]) historicalData[range].queue[url] = [];
+                        entries.forEach(e => {
+                            if (e.timestamp >= cutoff) {
+                                historicalData[range].labels.push(new Date(e.timestamp * 1000).toLocaleTimeString());
+                                historicalData[range].queue[url].push(e.queue_size);
+                            }
+                        });
+                        if (historicalData[range].labels.length > maxPoints)
+                            historicalData[range].labels = historicalData[range].labels.slice(-maxPoints);
+                        if (historicalData[range].queue[url].length > maxPoints)
+                            historicalData[range].queue[url] = historicalData[range].queue[url].slice(-maxPoints);
+                    });
+                });
+                setTimeRange(timeRange);
+            }).catch(() => {});
+        }
+
+        loadQueueHistory();
+        fetchIpTokens();
+        fetchUsageStats();
+        fetchQueueStatus();
+        setInterval(fetchQueueStatus, 2000);
+        setInterval(fetchIpTokens, 10000);
+        setInterval(fetchUsageStats, 10000);
+    </script>
+</body>
+</html>
