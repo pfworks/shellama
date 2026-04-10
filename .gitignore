@@ -10,6 +10,12 @@ certs/
 inventory.ini
 inventory-frontend.ini
 backends.json
+ooma/
+
+# Build artifacts
+*.aux
+*.log
+*.out
 
 # Python
 __pycache__/

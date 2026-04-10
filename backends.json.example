@@ -1,6 +1,0 @@
-{
-  "backends": [
-    {"url": "http://backend1.example.com:5000", "weight": 1, "max_model": "qwen2.5-coder:14b"},
-    {"url": "http://backend2.example.com:5000", "weight": 1, "max_model": "qwen2.5-coder:32b"}
-  ]
-}

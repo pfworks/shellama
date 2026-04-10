@@ -1,5 +1,14 @@
 ---
-- name: Deploy Ansible Ollama Frontend
+- name: Bootstrap Python
+  hosts: all
+  gather_facts: no
+  become: yes
+  tasks:
+    - name: Install Python
+      raw: apt-get update && apt-get install -y python3 python3-pip
+      changed_when: false
+
+- name: Deploy Ansible Ollama Tools
   hosts: all
   become: yes
   vars:
@@ -14,9 +23,11 @@
           - python3
           - python3-venv
           - python3-pip
+          - curl
         state: present
         update_cache: yes
       when: ansible_facts['os_family'] == "Debian"
+      ignore_errors: yes
 
     - name: Install dependencies (macOS)
       homebrew:
@@ -36,6 +47,15 @@
         - "{{ venv_path }}"
         - "{{ html_path }}"
 
+    - name: Check if Ollama is installed
+      stat:
+        path: /usr/local/bin/ollama
+      register: ollama_installed
+
+    - name: Install Ollama
+      shell: curl -fsSL https://ollama.com/install.sh | sh
+      when: not ollama_installed.stat.exists
+
     - name: Create Python virtual environment
       become_user: "{{ app_user }}"
       command: python3 -m venv {{ venv_path }}
@@ -46,55 +66,66 @@
     - name: Install Python packages
       pip:
         name:
+          - ollama
+          - pyyaml
           - flask
-          - requests
+          - psutil
         virtualenv: "{{ venv_path }}"
       become_user: "{{ app_user }}"
       become: no
 
-    - name: Copy app-distributed.py
-      copy:
-        src: app-distributed.py
-        dest: /usr/local/bin/app-distributed.py
-        mode: '0755'
-      notify: restart frontend
+#    - name: Pull Ollama models
+#      command: ollama pull {{ item }}
+#      loop:
+#        - codellama:7b
+#        - codellama:13b
+#        - codellama:34b
+#        - codellama:70b
+#      async: 3600
+#      poll: 30
+#      become_user: "{{ app_user }}"
+#      become: no
 
-    - name: Copy backends.json
+    - name: Copy app.py
       copy:
-        src: backends.json
-        dest: /usr/local/bin/backends.json
-        mode: '0644'
-        force: no
+        src: ../backend/app.py
+        dest: /usr/local/bin/app.py
+        mode: '0755'
+      notify: restart backend
 
     - name: Copy index.html
       copy:
-        src: index.html
+        src: ../frontend/web/index.html
         dest: "{{ html_path }}/index.html"
-        owner: "{{ app_user }}"
-        mode: '0644'
-
-    - name: Copy status.html
-      copy:
-        src: status.html
-        dest: "{{ html_path }}/status.html"
         owner: "{{ app_user }}"
         mode: '0644'
 
     - name: Copy systemd service file (Linux)
       copy:
-        src: ansible-ollama-frontend.service
-        dest: /etc/systemd/system/ansible-ollama-frontend.service
+        src: ../backend/ansible-ollama.service
+        dest: /etc/systemd/system/ansible-ollama.service
         mode: '0644'
       when: ansible_facts['os_family'] != "Darwin"
-      notify: restart frontend
+      notify: restart backend
 
     - name: Enable and start service (Linux)
       systemd:
-        name: ansible-ollama-frontend
+        name: ansible-ollama
         enabled: yes
         state: started
         daemon_reload: yes
       when: ansible_facts['os_family'] != "Darwin"
+
+    - name: Copy LaunchDaemon plist (macOS)
+      template:
+        src: com.ooma.ansible-ollama.plist
+        dest: /Library/LaunchDaemons/com.ooma.ansible-ollama.plist
+        mode: '0644'
+      when: ansible_facts['os_family'] == "Darwin"
+
+    - name: Load LaunchDaemon (macOS)
+      command: launchctl load /Library/LaunchDaemons/com.ooma.ansible-ollama.plist
+      when: ansible_facts['os_family'] == "Darwin"
 
     - name: Open firewall port (Linux)
       ufw:
@@ -104,9 +135,9 @@
       when: ansible_facts['os_family'] == "Debian"
 
   handlers:
-    - name: restart frontend
+    - name: restart backend
       systemd:
-        name: ansible-ollama-frontend
+        name: ansible-ollama
         state: restarted
         daemon_reload: yes
       when: ansible_facts['os_family'] != "Darwin"

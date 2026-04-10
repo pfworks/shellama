@@ -19,11 +19,11 @@ Local LLM-powered tool for code generation, explanation, shell-to-Ansible conver
 - Bash environment snapshot (functions, aliases, variables) inherited by AI commands
 
 **Interfaces:**
-- Bash CLI (`shellama`) — Linux/macOS
-- PowerShell CLI (`powershellama.ps1`) — Windows
-- PowerShell GUI (`powershellama-gui.ps1`, `powershellama-gui.cmd`) — Windows
-- Python GUI (`shellama-gui.pyw`) — cross-platform
-- Web UI with dark mode (`index.html`)
+- Bash CLI (`cli/shellama`) — Linux/macOS
+- PowerShell CLI (`powershell/powershellama.ps1`) — Windows
+- PowerShell GUI (`powershell/powershellama-gui.ps1`, `powershell/powershellama-gui.cmd`) — Windows
+- Python GUI (`cli/shellama-gui.pyw`) — cross-platform
+- Web UI with dark mode (`frontend/web/index.html`)
 - Admin console: Status, Backends, Stats pages
 - REST API
 
@@ -37,6 +37,46 @@ Local LLM-powered tool for code generation, explanation, shell-to-Ansible conver
 - Per-client and per-task usage tracking
 - Persistent stats (survive restarts)
 - Fully offline capable
+
+## Project Structure
+
+```
+shellama/
+├── cli/                        # Linux/macOS clients
+│   ├── shellama                # Bash CLI + agentic shell
+│   └── shellama-gui.pyw       # Python GUI (cross-platform)
+├── powershell/                 # Windows clients
+│   ├── powershellama.ps1      # PowerShell CLI + agentic shell
+│   ├── powershellama-gui.ps1  # PowerShell WinForms GUI
+│   └── powershellama-gui.cmd  # Double-click GUI launcher
+├── backend/                    # Backend worker
+│   ├── app.py                 # Ollama interface, queue, AI endpoints
+│   └── ansible-ollama.service # Linux systemd service
+├── frontend/                   # Frontend load balancer
+│   ├── app-distributed.py     # Weighted routing, parallel analysis, stats
+│   ├── ansible-ollama-frontend.service
+│   └── web/                   # Web UI + admin console
+│       ├── index.html         # Main web UI
+│       ├── status.html        # Admin: status summary
+│       ├── backends.html      # Admin: backend details
+│       └── stats.html         # Admin: charts and graphs
+├── deploy/                     # Ansible deployment
+│   ├── deploy.yml             # Backend playbook
+│   ├── deploy-frontend.yml    # Frontend playbook
+│   ├── inventory.ini.example
+│   ├── inventory-frontend.ini.example
+│   ├── backends.json.example
+│   └── com.ooma.ansible-ollama.plist  # macOS LaunchDaemon
+├── docs/                       # Documentation
+│   ├── cloud-fallback-setup.md   # OpenRouter + LiteLLM guide
+│   ├── cloud-fallback-setup.pdf  # PDF version
+│   ├── cloud-fallback-setup.tex  # LaTeX source
+│   └── SECURITY_CLEANUP.md
+└── bin/                        # Certificate management
+    ├── generate-certs.sh
+    ├── generate-user-cert.sh
+    └── revoke-cert.sh
+```
 
 ## System Requirements
 
@@ -67,23 +107,23 @@ ollama pull qwen2.5-coder:7b
 git clone <repo-url>
 cd shellama
 python3 -m venv venv && source venv/bin/activate
-pip install flask ollama pyyaml requests
-python app.py
+pip install flask ollama pyyaml requests psutil
+python backend/app.py
 
 # 4. Access
 # Web UI: http://localhost:5000
-# CLI:    ./shellama
-# GUI:    python3 shellama-gui.pyw
+# CLI:    ./cli/shellama
+# GUI:    python3 cli/shellama-gui.pyw
 ```
 
 ## CLI Usage
 
-### Bash CLI (`shellama`)
+### Bash CLI (`cli/shellama`)
 
 ```bash
 export SHELLAMA_API=http://your-server:5000
 export SHELLAMA_MODEL=qwen2.5-coder:7b
-./shellama
+./cli/shellama
 ```
 
 The CLI is a full bash shell with AI integration. Regular commands run in bash. Prefix with `,` to talk to the AI.
@@ -101,29 +141,29 @@ The CLI is a full bash shell with AI integration. Regular commands run in bash. 
 | `,quiet` | Toggle quiet mode |
 | `,list` / `,help` | Show available commands |
 
-### PowerShell CLI (`powershellama.ps1`)
+### PowerShell CLI (`powershell/powershellama.ps1`)
 
 ```powershell
 $env:SHELLAMA_API = "http://your-server:5000"
-.\powershellama.ps1
+.\powershell\powershellama.ps1
 ```
 
 Same command set as bash CLI. Agentic loop executes PowerShell commands instead of bash.
 
-### PowerShell GUI (`powershellama-gui.ps1` / `powershellama-gui.cmd`)
+### PowerShell GUI
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File powershellama-gui.ps1
-# Or double-click powershellama-gui.cmd
+powershell -ExecutionPolicy Bypass -File powershell\powershellama-gui.ps1
+# Or double-click powershell\powershellama-gui.cmd
 ```
 
 WinForms GUI with dark mode, Consolas font, agentic loop in terminal pane. Use `,stop` to stop backend processing.
 
-### Python GUI (`shellama-gui.pyw`)
+### Python GUI (`cli/shellama-gui.pyw`)
 
 ```bash
 export SHELLAMA_API=http://your-server:5000
-python3 shellama-gui.pyw
+python3 cli/shellama-gui.pyw
 ```
 
 Cross-platform GUI with dark mode, color themes, multiple fonts, file/directory browser, interactive follow-up questions, error log viewer, persistent settings.
@@ -209,34 +249,21 @@ curl -X POST http://server:5000/generate-image \
 
 ```bash
 # 1. Configure
-cat > inventory.ini << EOF
-[servers]
-192.168.1.230 ansible_user=root
-EOF
-
-cat > inventory-frontend.ini << EOF
-[frontend]
-192.168.1.229 ansible_user=root
-EOF
-
-cat > backends.json << EOF
-{
-  "backends": [
-    {"url": "http://192.168.1.230:5000", "weight": 10, "max_model": "qwen2.5-coder:7b"}
-  ]
-}
-EOF
+cp deploy/inventory.ini.example inventory.ini
+cp deploy/inventory-frontend.ini.example inventory-frontend.ini
+cp deploy/backends.json.example backends.json
+# Edit each file with your server details
 
 # 2. Deploy backend, pull models
-ansible-playbook -i inventory.ini deploy.yml
+ansible-playbook -i inventory.ini deploy/deploy.yml
 ssh root@192.168.1.230 "ollama pull qwen2.5-coder:7b"
 
 # 3. Deploy frontend
-ansible-playbook -i inventory-frontend.ini deploy-frontend.yml
+ansible-playbook -i inventory-frontend.ini deploy/deploy-frontend.yml
 
 # 4. Access
-# Web UI: http://192.168.1.229:5000
-# Admin:  http://192.168.1.229:5000/status
+# Web UI: http://frontend:5000
+# Admin:  http://frontend:5000/status
 ```
 
 ### Load Balancing
@@ -275,7 +302,7 @@ Environment="OPENROUTER_URL=http://litellm-host:4000/v1/chat/completions"
 Environment="USE_CLOUD_FALLBACK=true"
 ```
 
-See `openrouter-setup.md` for full setup guide including LiteLLM configuration.
+See `docs/cloud-fallback-setup.md` for full setup guide including LiteLLM configuration.
 
 ### macOS Notes
 
@@ -311,15 +338,6 @@ tail -f /var/log/ansible-ollama.log
 | `deepseek-coder:6.7b` | 30-60s | Alternative |
 | `qwen2.5-coder:14b` | 1-3min | Higher quality, needs 32+ cores |
 
-## Certificate Management
-
-Scripts in `bin/` for mTLS certificate management:
-```bash
-bin/generate-certs.sh          # Generate CA + server + client certs
-bin/generate-user-cert.sh <user>  # Generate user certificate
-bin/revoke-cert.sh <user>      # Revoke a certificate
-```
-
 ## Troubleshooting
 
 **Timeouts:** Frontend→backend timeout is 3600s (1 hour). Uses keepalive connections. Each task gets a unique ID for tracking.
@@ -334,32 +352,6 @@ sudo systemctl status ansible-ollama
 sudo journalctl -u ansible-ollama -f
 sudo systemctl restart ansible-ollama
 ```
-
-## Files
-
-| File | Description |
-|------|-------------|
-| `app.py` | Backend worker (Ollama interface, queue, all AI endpoints) |
-| `app-distributed.py` | Frontend load balancer (weighted routing, parallel analysis, stats) |
-| `shellama` | Bash CLI + agentic shell |
-| `powershellama.ps1` | PowerShell CLI + agentic shell |
-| `powershellama-gui.ps1` | PowerShell WinForms GUI |
-| `powershellama-gui.cmd` | Double-click GUI launcher for Windows |
-| `shellama-gui.pyw` | Python GUI (cross-platform) |
-| `index.html` | Web UI |
-| `status.html` | Admin: status summary |
-| `backends.html` | Admin: backend details |
-| `stats.html` | Admin: charts and graphs |
-| `deploy.yml` | Backend Ansible deployment |
-| `deploy-frontend.yml` | Frontend Ansible deployment |
-| `backends.json` | Backend configuration (URLs, weights, max_model) |
-| `ansible-ollama.service` | Linux backend systemd service |
-| `ansible-ollama-frontend.service` | Linux frontend systemd service |
-| `com.ooma.ansible-ollama.plist` | macOS backend LaunchDaemon |
-| `openrouter-setup.md` | Cloud fallback setup guide (OpenRouter + LiteLLM) |
-| `bin/generate-certs.sh` | CA and server/client certificate generation |
-| `bin/generate-user-cert.sh` | Per-user certificate generation |
-| `bin/revoke-cert.sh` | Certificate revocation |
 
 ## Internet Requirements
 

@@ -1,0 +1,366 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+
+\hypersetup{colorlinks=true,linkcolor=blue,urlcolor=blue}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  backgroundcolor=\color{gray!10},
+  frame=single,
+  framerule=0.5pt,
+  rulecolor=\color{gray!50},
+  breaklines=true,
+  breakatwhitespace=true,
+  columns=fullflexible,
+  keepspaces=true,
+  showstringspaces=false,
+  xleftmargin=4pt,
+  xrightmargin=4pt,
+  aboveskip=8pt,
+  belowskip=8pt,
+}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\texttt{SheLLama}}
+\fancyhead[R]{Cloud Fallback Setup Guide}
+\fancyfoot[C]{\thepage}
+
+\title{\textbf{Cloud Fallback Setup Guide}\\[4pt]\large OpenRouter \& LiteLLM for SheLLama}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+\thispagestyle{fancy}
+
+\section{Overview}
+
+SheLLama supports cloud LLM fallback when local Ollama models produce low-quality output. Two options are available:
+
+\begin{itemize}
+  \item \textbf{OpenRouter} --- cloud service at openrouter.ai, access to Claude/GPT-4/Llama/Gemini
+  \item \textbf{LiteLLM} --- self-hosted proxy, runs on your network, routes to any LLM provider
+\end{itemize}
+
+When enabled, SheLLama automatically detects poor responses from the local model and re-sends the request through the configured fallback.
+
+\section{Option 1: LiteLLM (Self-Hosted, Recommended)}
+
+LiteLLM runs on your network as an OpenAI-compatible proxy. It can route to Ollama, vLLM, HuggingFace, or cloud providers.
+
+\subsection{Install LiteLLM}
+
+On a server in your network (can be the frontend or a dedicated host):
+
+\begin{lstlisting}[language=bash]
+pip install litellm[proxy]
+\end{lstlisting}
+
+\subsection{Configure LiteLLM}
+
+Create a config file:
+
+\begin{lstlisting}[language=bash]
+cat > /etc/litellm/config.yaml << 'EOF'
+model_list:
+  - model_name: fallback
+    litellm_params:
+      model: ollama/qwen2.5-coder:14b
+      api_base: http://192.168.1.218:11434
+  - model_name: fallback
+    litellm_params:
+      model: ollama/qwen2.5-coder:14b
+      api_base: http://192.168.1.219:11434
+EOF
+\end{lstlisting}
+
+This routes the \texttt{fallback} model to your larger backends via Ollama directly. You can also add cloud models:
+
+\begin{lstlisting}
+  - model_name: cloud
+    litellm_params:
+      model: anthropic/claude-3.5-sonnet
+      api_key: sk-ant-your-key-here
+\end{lstlisting}
+
+\subsection{Start LiteLLM}
+
+\begin{lstlisting}[language=bash]
+litellm --config /etc/litellm/config.yaml --port 4000
+\end{lstlisting}
+
+Or as a systemd service:
+
+\begin{lstlisting}[language=bash]
+cat > /etc/systemd/system/litellm.service << 'EOF'
+[Unit]
+Description=LiteLLM Proxy
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/litellm --config /etc/litellm/config.yaml --port 4000
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now litellm
+\end{lstlisting}
+
+\subsection{Configure SheLLama to Use LiteLLM}
+
+On each backend server:
+
+\begin{lstlisting}[language=bash]
+ssh root@<backend-ip>
+sudo systemctl edit ansible-ollama
+\end{lstlisting}
+
+Add:
+
+\begin{lstlisting}
+[Service]
+Environment="OPENROUTER_API_KEY=sk-anything"
+Environment="OPENROUTER_MODEL=fallback"
+Environment="OPENROUTER_URL=http://<litellm-host>:4000/v1/chat/completions"
+Environment="USE_CLOUD_FALLBACK=true"
+\end{lstlisting}
+
+Note: LiteLLM requires an API key header but doesn't validate it by default --- any non-empty value works.
+
+Restart:
+
+\begin{lstlisting}[language=bash]
+sudo systemctl restart ansible-ollama
+\end{lstlisting}
+
+\subsection{Configure All Backends at Once}
+
+\begin{lstlisting}[language=bash]
+for host in 192.168.1.230 192.168.1.233 192.168.1.218 192.168.1.219; do
+  echo "--- $host ---"
+  ssh root@$host "mkdir -p /etc/systemd/system/ansible-ollama.service.d && \
+    cat > /etc/systemd/system/ansible-ollama.service.d/override.conf << 'EOF'
+[Service]
+Environment=\"OPENROUTER_API_KEY=sk-local\"
+Environment=\"OPENROUTER_MODEL=fallback\"
+Environment=\"OPENROUTER_URL=http://192.168.1.229:4000/v1/chat/completions\"
+Environment=\"USE_CLOUD_FALLBACK=true\"
+EOF
+    systemctl daemon-reload && systemctl restart ansible-ollama"
+done
+\end{lstlisting}
+
+\subsection{Verify LiteLLM}
+
+\begin{lstlisting}[language=bash]
+curl http://<litellm-host>:4000/v1/models
+curl -X POST http://<litellm-host>:4000/v1/chat/completions \
+  -H "Authorization: Bearer sk-local" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "fallback", "messages": [{"role": "user", "content": "hello"}]}'
+\end{lstlisting}
+
+\section{Option 2: OpenRouter (Cloud)}
+
+\begin{enumerate}
+  \item Go to \url{https://openrouter.ai}
+  \item Click \textbf{Sign Up} and create an account (Google/GitHub OAuth or email)
+  \item Navigate to \textbf{Keys} at \url{https://openrouter.ai/keys}
+  \item Click \textbf{Create Key}
+  \item Name it (e.g., \texttt{shellama}) and copy the key --- it starts with \texttt{sk-or-v1-...}
+\end{enumerate}
+
+\section{Add Credits}
+
+\begin{enumerate}
+  \item Go to \textbf{Credits} at \url{https://openrouter.ai/credits}
+  \item Add funds --- \$5 is enough for significant usage
+  \item Optionally set a usage limit to avoid surprises
+\end{enumerate}
+
+\section{Choose a Model}
+
+Browse available models at \url{https://openrouter.ai/models}.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{llll}
+\toprule
+\textbf{Model} & \textbf{ID} & \textbf{Cost (per 1M tokens)} & \textbf{Notes} \\
+\midrule
+Claude 3.5 Sonnet & \texttt{anthropic/claude-3.5-sonnet} & \textasciitilde\$3/\$15 & Default, high quality \\
+GPT-4o & \texttt{openai/gpt-4o} & \textasciitilde\$2.50/\$10 & Fast, good quality \\
+Llama 3 70B & \texttt{meta-llama/llama-3-70b-instruct} & \textasciitilde\$0.60/\$0.80 & Open source, cheap \\
+Gemini Pro 1.5 & \texttt{google/gemini-pro-1.5} & \textasciitilde\$1.25/\$5 & Large context window \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Configure SheLLama Backends}
+
+The cloud fallback is configured on each \textbf{backend} server (not the frontend). You need to set three environment variables in the systemd service.
+
+\subsection{Option A: Using systemd override (recommended)}
+
+On each backend server:
+
+\begin{lstlisting}[language=bash]
+ssh root@<backend-ip>
+sudo systemctl edit ansible-ollama
+\end{lstlisting}
+
+This opens an editor. Add the following:
+
+\begin{lstlisting}
+[Service]
+Environment="OPENROUTER_API_KEY=sk-or-v1-your-key-here"
+Environment="OPENROUTER_MODEL=anthropic/claude-3.5-sonnet"
+Environment="USE_CLOUD_FALLBACK=true"
+\end{lstlisting}
+
+Save and restart:
+
+\begin{lstlisting}[language=bash]
+sudo systemctl restart ansible-ollama
+\end{lstlisting}
+
+\subsection{Option B: Edit the service file directly}
+
+\begin{lstlisting}[language=bash]
+ssh root@<backend-ip>
+sudo nano /etc/systemd/system/ansible-ollama.service
+\end{lstlisting}
+
+Update the \texttt{Environment} lines:
+
+\begin{lstlisting}
+[Service]
+Environment="OPENROUTER_API_KEY=sk-or-v1-your-key-here"
+Environment="OPENROUTER_MODEL=anthropic/claude-3.5-sonnet"
+Environment="USE_CLOUD_FALLBACK=true"
+\end{lstlisting}
+
+Reload and restart:
+
+\begin{lstlisting}[language=bash]
+sudo systemctl daemon-reload
+sudo systemctl restart ansible-ollama
+\end{lstlisting}
+
+\subsection{Configuring All Backends at Once}
+
+\begin{lstlisting}[language=bash]
+for host in 192.168.1.230 192.168.1.233 192.168.1.218 192.168.1.219; do
+  echo "--- $host ---"
+  ssh root@$host "mkdir -p /etc/systemd/system/ansible-ollama.service.d && \
+    cat > /etc/systemd/system/ansible-ollama.service.d/override.conf << 'EOF'
+[Service]
+Environment=\"OPENROUTER_API_KEY=sk-or-v1-your-key-here\"
+Environment=\"OPENROUTER_MODEL=anthropic/claude-3.5-sonnet\"
+Environment=\"USE_CLOUD_FALLBACK=true\"
+EOF
+    systemctl daemon-reload && systemctl restart ansible-ollama"
+done
+\end{lstlisting}
+
+\section{Verify}
+
+Check that the service is running with the new config:
+
+\begin{lstlisting}[language=bash]
+ssh root@<backend-ip>
+sudo systemctl status ansible-ollama
+\end{lstlisting}
+
+Test the fallback by sending a request that would produce a poor local response:
+
+\begin{lstlisting}[language=bash]
+curl -X POST http://<backend-ip>:5000/generate-code \
+  -H "Content-Type: application/json" \
+  -d '{"description": "complex distributed system", "model": "qwen2.5-coder:7b"}'
+\end{lstlisting}
+
+If the local model's response is empty or an error, the response JSON will include:
+
+\begin{lstlisting}
+{
+  "cloud_fallback": true,
+  "cloud_model": "anthropic/claude-3.5-sonnet"
+}
+\end{lstlisting}
+
+\section{Disable Cloud Fallback}
+
+To go back to fully offline operation:
+
+\begin{lstlisting}[language=bash]
+ssh root@<backend-ip>
+sudo systemctl edit ansible-ollama
+\end{lstlisting}
+
+Change to:
+
+\begin{lstlisting}
+[Service]
+Environment="USE_CLOUD_FALLBACK=false"
+\end{lstlisting}
+
+Restart:
+
+\begin{lstlisting}[language=bash]
+sudo systemctl restart ansible-ollama
+\end{lstlisting}
+
+\section{How Fallback Works}
+
+\begin{enumerate}
+  \item Every request is first processed by the local Ollama model
+  \item The response is checked for quality:
+    \begin{itemize}[nosep]
+      \item Empty playbook or code output $\rightarrow$ triggers fallback
+      \item Error from Ollama $\rightarrow$ triggers fallback
+      \item Successful non-empty response $\rightarrow$ returned as-is (no cloud call)
+    \end{itemize}
+  \item If fallback triggers, the same prompt is sent to OpenRouter
+  \item The cloud response replaces the local response
+  \item The response is tagged with \texttt{cloud\_fallback: true} so clients know
+\end{enumerate}
+
+\section{Environment Variables Reference}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lll}
+\toprule
+\textbf{Variable} & \textbf{Default} & \textbf{Description} \\
+\midrule
+\texttt{OPENROUTER\_API\_KEY} & \textit{(empty)} & API key (OpenRouter or any string for LiteLLM) \\
+\texttt{OPENROUTER\_MODEL} & \texttt{anthropic/claude-3.5-sonnet} & Model to use for fallback \\
+\texttt{OPENROUTER\_URL} & \texttt{https://openrouter.ai/...} & API endpoint (change for LiteLLM) \\
+\texttt{USE\_CLOUD\_FALLBACK} & \texttt{false} & Set to \texttt{true} to enable \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Cost Management}
+
+\begin{itemize}
+  \item Monitor usage at \url{https://openrouter.ai/activity}
+  \item Set spending limits at \url{https://openrouter.ai/credits}
+  \item Use cheaper models (e.g., \texttt{meta-llama/llama-3-70b-instruct}) to reduce costs
+  \item Fallback only triggers on poor local responses, so costs are minimal with a good local model
+\end{itemize}
+
+\end{document}
