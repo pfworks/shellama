@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    PowerSheLLama - PowerShell + AI agent. Prefix with , to talk to the AI.
+    PowerSheLLaMa - PowerShell + AI agent. Prefix with , to talk to the AI.
 #>
 
 $SHELLAMA_API = if ($env:SHELLAMA_API) { $env:SHELLAMA_API } elseif ($env:ANSIBLE_TOOLS_API) { $env:ANSIBLE_TOOLS_API } else { "http://192.168.1.229:5000" }

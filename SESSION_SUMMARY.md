@@ -1,10 +1,10 @@
-# SheLLama - Session Summary
+# sheLLaMa - Session Summary
 
 Last updated: April 10, 2026
 
 ## Project Overview
 
-SheLLama is a local LLM-powered tool (Ollama backend) for shell→Ansible conversion, code generation/explanation, chat, multi-file analysis, and image generation. Distributed architecture with frontend load balancer and backend workers. Fully offline after initial model pull. Formerly named "ansible-tools" — renamed in commit `5c53cc0` on April 9, 2026.
+sheLLaMa is a local LLM-powered tool (Ollama backend) for shell→Ansible conversion, code generation/explanation, chat, multi-file analysis, and image generation. Distributed architecture with frontend load balancer and backend workers. Fully offline after initial model pull. Formerly named "ansible-tools" — renamed in commit `5c53cc0` on April 9, 2026.
 
 ## Project Structure
 

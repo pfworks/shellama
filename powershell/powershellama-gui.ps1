@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    PowerSheLLama GUI - Windows GUI wrapper around powershellama with model/service selection.
+    PowersheLLaMa GUI - Windows GUI wrapper around powershellama with model/service selection.
 #>
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -11,7 +11,7 @@ $SHELLAMA_MODEL = if ($env:SHELLAMA_MODEL) { $env:SHELLAMA_MODEL } else { "qwen2
 
 # --- Main Form ---
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "SheLLama"
+$form.Text = "sheLLaMa"
 $form.Size = New-Object System.Drawing.Size(1000, 700)
 $form.StartPosition = "CenterScreen"
 $form.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
@@ -383,7 +383,7 @@ $form.Add_FormClosing({
     }
 })
 
-Write-Terminal "SheLLama - PowerShell + AI agent" ([System.Drawing.Color]::Cyan)
+Write-Terminal "sheLLaMa - PowerShell + AI agent" ([System.Drawing.Color]::Cyan)
 Write-Terminal "Type , for AI commands, ,list for help" ([System.Drawing.Color]::Gray)
 Write-Terminal ""
 Refresh-Models

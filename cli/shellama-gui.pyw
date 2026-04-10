@@ -11,7 +11,7 @@ import ssl
 class AnsibleToolsGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("SheLLama")
+        self.root.title("sheLLaMa")
         self.root.geometry("900x850")
         self.config_file = os.path.expanduser('~/.shellama-gui.json')
         self.cert_dir = os.path.expanduser('~/.shellama')
@@ -94,7 +94,7 @@ class AnsibleToolsGUI:
         help_menu.add_command(label="View Error Log", command=self.show_error_log)
     
     def show_about(self):
-        about_text = """SheLLama GUI
+        about_text = """sheLLaMa GUI
 Version 1.0
 
 A local LLM-powered tool for:
@@ -107,7 +107,7 @@ Uses Ollama with CodeLlama models (7B, 13B, 34B, 70B)
 
 GitHub: https://github.com/your-repo/shellama
 """
-        messagebox.showinfo("About SheLLama", about_text)
+        messagebox.showinfo("About sheLLaMa", about_text)
     
     def show_error_log(self):
         if not hasattr(self, 'last_error') or not self.last_error:

@@ -1,4 +1,4 @@
-# SheLLama
+# sheLLaMa
 
 Local LLM-powered tool for code generation, explanation, shell-to-Ansible conversion, file analysis, chat, and image generation. Agentic shell where the AI can run commands and iterate. Runs completely offline after initial model pull.
 

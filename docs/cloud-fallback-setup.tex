@@ -28,11 +28,11 @@
 
 \pagestyle{fancy}
 \fancyhf{}
-\fancyhead[L]{\texttt{SheLLama}}
+\fancyhead[L]{\texttt{sheLLaMa}}
 \fancyhead[R]{Cloud Fallback Setup Guide}
 \fancyfoot[C]{\thepage}
 
-\title{\textbf{Cloud Fallback Setup Guide}\\[4pt]\large OpenRouter \& LiteLLM for SheLLama}
+\title{\textbf{Cloud Fallback Setup Guide}\\[4pt]\large OpenRouter \& LiteLLM for sheLLaMa}
 \author{}
 \date{}
 
@@ -42,14 +42,14 @@
 
 \section{Overview}
 
-SheLLama supports cloud LLM fallback when local Ollama models produce low-quality output. Two options are available:
+sheLLaMa supports cloud LLM fallback when local Ollama models produce low-quality output. Two options are available:
 
 \begin{itemize}
   \item \textbf{OpenRouter} --- cloud service at openrouter.ai, access to Claude/GPT-4/Llama/Gemini
   \item \textbf{LiteLLM} --- self-hosted proxy, runs on your network, routes to any LLM provider
 \end{itemize}
 
-When enabled, SheLLama automatically detects poor responses from the local model and re-sends the request through the configured fallback.
+When enabled, sheLLaMa automatically detects poor responses from the local model and re-sends the request through the configured fallback.
 
 \section{Option 1: LiteLLM (Self-Hosted, Recommended)}
 
@@ -118,7 +118,7 @@ systemctl daemon-reload
 systemctl enable --now litellm
 \end{lstlisting}
 
-\subsection{Configure SheLLama to Use LiteLLM}
+\subsection{Configure sheLLaMa to Use LiteLLM}
 
 On each backend server:
 
@@ -208,7 +208,7 @@ Gemini Pro 1.5 & \texttt{google/gemini-pro-1.5} & \textasciitilde\$1.25/\$5 & La
 \end{tabular}
 \end{table}
 
-\section{Configure SheLLama Backends}
+\section{Configure sheLLaMa Backends}
 
 The cloud fallback is configured on each \textbf{backend} server (not the frontend). You need to set three environment variables in the systemd service.
 

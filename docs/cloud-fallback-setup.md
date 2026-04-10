@@ -1,13 +1,13 @@
-# Cloud Fallback Setup Guide for SheLLama
+# Cloud Fallback Setup Guide for sheLLaMa
 
 ## Overview
 
-SheLLama supports cloud LLM fallback when local Ollama models produce low-quality output. Two options are available:
+sheLLaMa supports cloud LLM fallback when local Ollama models produce low-quality output. Two options are available:
 
 - **OpenRouter** — cloud service at openrouter.ai, access to Claude/GPT-4/Llama/Gemini
 - **LiteLLM** — self-hosted proxy, runs on your network, routes to any LLM provider
 
-When enabled, SheLLama automatically detects poor responses from the local model and re-sends the request through the configured fallback.
+When enabled, sheLLaMa automatically detects poor responses from the local model and re-sends the request through the configured fallback.
 
 ---
 
@@ -78,7 +78,7 @@ systemctl daemon-reload
 systemctl enable --now litellm
 ```
 
-### Configure SheLLama to Use LiteLLM
+### Configure sheLLaMa to Use LiteLLM
 
 On each backend server:
 
@@ -163,7 +163,7 @@ Recommended models:
 | Llama 3 70B | `meta-llama/llama-3-70b-instruct` | ~$0.60/$0.80 | Open source, cheap |
 | Gemini Pro 1.5 | `google/gemini-pro-1.5` | ~$1.25/$5 | Large context window |
 
-## 4. Configure SheLLama Backends
+## 4. Configure sheLLaMa Backends
 
 The cloud fallback is configured on each **backend** server (not the frontend). You need to set three environment variables in the systemd service.
 
