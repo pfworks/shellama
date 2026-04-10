@@ -111,8 +111,68 @@ function Invoke-ShellamaAPI {
     param([string]$Endpoint, [hashtable]$Body)
     $api = $txtApi.Text
     $json = $Body | ConvertTo-Json -Depth 10
-    $resp = Invoke-RestMethod -Uri "$api$Endpoint" -Method Post -Body $json -ContentType "application/json" -TimeoutSec 600
-    return $resp
+    $uri = "$api$Endpoint"
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
+    $req = [System.Net.HttpWebRequest]::Create($uri)
+    $script:activeRequest = $req
+    $req.Method = "POST"
+    $req.ContentType = "application/json"
+    $req.Timeout = 3600000
+    $req.ReadWriteTimeout = 3600000
+    $reqStream = $null
+    $webResp = $null
+    $reader = $null
+    try {
+        $reqStream = $req.GetRequestStream()
+        $reqStream.Write($bytes, 0, $bytes.Length)
+        $reqStream.Close()
+        $reqStream = $null
+        $asyncResult = $req.BeginGetResponse($null, $null)
+        $frames = @("|", "/", "-", "\")
+        $i = 0
+        while (-not $asyncResult.IsCompleted) {
+            if ($script:formClosing -or -not $form.Visible) {
+                try { $req.Abort() } catch {}
+                $script:activeRequest = $null
+                return $null
+            }
+            $lblPrompt.Text = "🔴 $($frames[$i % 4])"
+            $lblPrompt.Refresh()
+            $i++
+            [System.Windows.Forms.Application]::DoEvents()
+            Start-Sleep -Milliseconds 250
+        }
+        if ($script:formClosing) {
+            try { $req.Abort() } catch {}
+            $script:activeRequest = $null
+            return $null
+        }
+        $script:activeRequest = $null
+        $lblPrompt.Text = "🔴 PS>"
+        $lblPrompt.Refresh()
+        $webResp = $req.EndGetResponse($asyncResult)
+        $reader = New-Object System.IO.StreamReader($webResp.GetResponseStream())
+        $respText = $reader.ReadToEnd()
+        return ($respText | ConvertFrom-Json)
+    } catch [System.Net.WebException] {
+        if ($_.Exception.Status -eq [System.Net.WebExceptionStatus]::RequestCanceled) {
+            return $null
+        }
+        if (-not $script:formClosing) {
+            Write-Terminal "Network error: $($_.Exception.Message)" ([System.Drawing.Color]::Red)
+        }
+        return $null
+    } catch {
+        if (-not $script:formClosing) {
+            Write-Terminal "Request error: $_" ([System.Drawing.Color]::Red)
+        }
+        return $null
+    } finally {
+        $script:activeRequest = $null
+        if ($reader) { try { $reader.Close() } catch {} }
+        if ($webResp) { try { $webResp.Close() } catch {} }
+        if ($reqStream) { try { $reqStream.Close() } catch {} }
+    }
 }
 
 function Refresh-Models {
@@ -157,6 +217,7 @@ Always run commands yourself. Keep commands short and focused.
         $resp = Invoke-ShellamaAPI "/chat" @{ message = $conversation; model = $model }
         $lblPrompt.Text = "🔴 PS>"
         $lblPrompt.Refresh()
+        if ($script:formClosing) { return }
         if (-not $resp -or $resp.error) {
             if ($resp.error) { Write-Terminal "Error: $($resp.error)" ([System.Drawing.Color]::Red) }
             return
@@ -311,10 +372,11 @@ $txtInput.Add_KeyDown({
 
 # --- Startup ---
 $script:activeRequest = $null
+$script:formClosing = $false
 
 $form.Add_FormClosing({
     param($s, $e)
-    # Abort any in-flight HTTP request
+    $script:formClosing = $true
     if ($script:activeRequest) {
         try { $script:activeRequest.Abort() } catch {}
         $script:activeRequest = $null
