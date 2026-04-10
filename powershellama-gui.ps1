@@ -132,6 +132,72 @@ function Refresh-Models {
     }
 }
 
+function Invoke-StopAll {
+    try { Invoke-RestMethod -Uri "$($txtApi.Text)/stop-all" -Method Post -TimeoutSec 5 | Out-Null } catch {}
+}
+
+function Invoke-AgentLoop {
+    param([string]$Query)
+    $model = $cmbModel.SelectedItem
+    $system = @"
+You are an AI assistant running inside a PowerShell session on Windows.
+Current directory: $(Get-Location)
+
+You can run PowerShell commands to answer the user's question. To run a command, output it in a ```powershell block.
+When you have enough info, give your final answer as plain text with no ```powershell blocks.
+Always run commands yourself. Keep commands short and focused.
+"@
+    $conversation = "$system`n`nUser: $Query"
+    $totalTokens = 0; $totalElapsed = 0
+
+    for ($round = 0; $round -lt 10; $round++) {
+        $lblPrompt.Text = "🦙..."
+        $lblPrompt.Refresh()
+        [System.Windows.Forms.Application]::DoEvents()
+        $resp = Invoke-ShellamaAPI "/chat" @{ message = $conversation; model = $model }
+        $lblPrompt.Text = "🔴 PS>"
+        $lblPrompt.Refresh()
+        if (-not $resp -or $resp.error) {
+            if ($resp.error) { Write-Terminal "Error: $($resp.error)" ([System.Drawing.Color]::Red) }
+            return
+        }
+        $response = $resp.response
+        $tokens = if ($resp.total_tokens) { $resp.total_tokens } else { 0 }
+        $elapsed = if ($resp.elapsed) { $resp.elapsed } else { 0 }
+        $totalTokens += $tokens; $totalElapsed += $elapsed
+
+        $commands = [regex]::Matches($response, '```powershell\n(.*?)```', 'Singleline') | ForEach-Object { $_.Groups[1].Value.Trim() }
+
+        if ($commands.Count -eq 0) {
+            Write-Terminal $response ([System.Drawing.Color]::Cyan)
+            Write-Terminal "[$($round + 1) round$(if($round){'s'}) | $([math]::Round($totalElapsed,1))s | $totalTokens tokens | $model]" ([System.Drawing.Color]::Gray)
+            return
+        }
+
+        # Show reasoning text
+        $parts = [regex]::Split($response, '```powershell\n.*?```', 'Singleline')
+        foreach ($part in $parts) { $part = $part.Trim(); if ($part) { Write-Terminal $part ([System.Drawing.Color]::Cyan) } }
+        Write-Terminal "[round $($round + 1) | $([math]::Round($elapsed,1))s | $tokens tokens]" ([System.Drawing.Color]::Gray)
+
+        # Execute commands
+        $cmdOutputs = @()
+        foreach ($cmd in $commands) {
+            Write-Terminal "PS> $cmd" ([System.Drawing.Color]::Yellow)
+            try {
+                $output = Invoke-Expression $cmd 2>&1 | Out-String
+                if ($output.Trim()) { Write-Terminal $output.Trim() ([System.Drawing.Color]::DarkGray) }
+                $cmdOutputs += "PS> $cmd`n$output"
+            } catch {
+                Write-Terminal "Error: $_" ([System.Drawing.Color]::Red)
+                $cmdOutputs += "PS> $cmd`nError: $_"
+            }
+        }
+        $results = $cmdOutputs -join "`n`n"
+        $conversation += "`n`nAssistant: $response`n`nCommand output:`n$results`n`nContinue. If you have enough information, give your final answer without any ``````powershell blocks."
+    }
+    Write-Terminal "[max rounds reached | $([math]::Round($totalElapsed,1))s | $totalTokens tokens]" ([System.Drawing.Color]::Gray)
+}
+
 function Process-Input {
     $line = $txtInput.Text.Trim()
     $txtInput.Clear()
@@ -151,11 +217,12 @@ function Process-Input {
             Write-Terminal ",analyze  <path>  analyze files/dirs" ([System.Drawing.Color]::Yellow)
             Write-Terminal ",img <prompt>     generate image" ([System.Drawing.Color]::Yellow)
             Write-Terminal ",models           select model" ([System.Drawing.Color]::Yellow)
+            Write-Terminal ",stop             stop backend" ([System.Drawing.Color]::Yellow)
             return
         }
         if ($query -eq 'models') { Refresh-Models; return }
+        if ($query -eq 'stop') { Invoke-StopAll; Write-Terminal "Stop sent to backend" ([System.Drawing.Color]::Gray); return }
 
-        # Route to appropriate endpoint
         try {
             if ($query.StartsWith('explain ')) {
                 $file = $query.Substring(8).Trim()
@@ -171,13 +238,33 @@ function Process-Input {
             }
             elseif ($query.StartsWith('generate ')) {
                 $desc = $query.Substring(9).Trim()
-                if ($desc -match 'ansible|playbook') {
+                if ($desc -match 'ansible|playbook|shell command') {
                     $resp = Invoke-ShellamaAPI "/generate" @{ commands = $desc; model = $model }
                     Write-Terminal $resp.playbook ([System.Drawing.Color]::Cyan)
                 } else {
                     $resp = Invoke-ShellamaAPI "/generate-code" @{ description = $desc; model = $model }
                     Write-Terminal $resp.code ([System.Drawing.Color]::Cyan)
                 }
+            }
+            elseif ($query.StartsWith('analyze ')) {
+                $paths = $query.Substring(8).Trim() -split '\s+'
+                [array]$filesData = @()
+                foreach ($p in $paths) {
+                    if (Test-Path $p -PathType Container) {
+                        Get-ChildItem $p -Recurse -File | ForEach-Object {
+                            try { $filesData += @{ path = $_.FullName; content = (Get-Content $_.FullName -Raw) } } catch {}
+                        }
+                    } elseif (Test-Path $p) {
+                        try { $filesData += @{ path = (Resolve-Path $p).Path; content = (Get-Content $p -Raw) } } catch {}
+                    } else {
+                        Write-Terminal "${p}: not found" ([System.Drawing.Color]::Red)
+                    }
+                }
+                if ($filesData.Count -eq 0) { Write-Terminal "No readable files found" ([System.Drawing.Color]::Red); return }
+                Write-Terminal "Analyzing $($filesData.Count) file$(if($filesData.Count -ne 1){'s'})..." ([System.Drawing.Color]::Gray)
+                $resp = Invoke-ShellamaAPI "/analyze" @{ files = @($filesData); model = $model }
+                if ($resp.error) { Write-Terminal "Error: $($resp.error)" ([System.Drawing.Color]::Red) }
+                else { Write-Terminal $resp.analysis ([System.Drawing.Color]::Cyan) }
             }
             elseif ($query.StartsWith('img ')) {
                 $imageModel = if ($env:AI_IMAGE_MODEL) { $env:AI_IMAGE_MODEL } else { "sd-turbo" }
@@ -190,10 +277,9 @@ function Process-Input {
                 }
             }
             else {
-                # Default: chat
-                $resp = Invoke-ShellamaAPI "/chat" @{ message = $query; model = $model }
-                if ($resp.error) { Write-Terminal "Error: $($resp.error)" ([System.Drawing.Color]::Red) }
-                else { Write-Terminal $resp.response ([System.Drawing.Color]::Cyan) }
+                # Default: agentic chat
+                Invoke-AgentLoop -Query $query
+                return
             }
             if ($resp.elapsed) {
                 Write-Terminal "[$($resp.elapsed)s | $($resp.total_tokens) tokens | $model]" ([System.Drawing.Color]::Gray)
@@ -224,6 +310,17 @@ $txtInput.Add_KeyDown({
 })
 
 # --- Startup ---
+$script:activeRequest = $null
+
+$form.Add_FormClosing({
+    param($s, $e)
+    # Abort any in-flight HTTP request
+    if ($script:activeRequest) {
+        try { $script:activeRequest.Abort() } catch {}
+        $script:activeRequest = $null
+    }
+})
+
 Write-Terminal "SheLLama - PowerShell + AI agent" ([System.Drawing.Color]::Cyan)
 Write-Terminal "Type , for AI commands, ,list for help" ([System.Drawing.Color]::Gray)
 Write-Terminal ""
@@ -231,3 +328,4 @@ Refresh-Models
 $txtInput.Focus()
 
 [void]$form.ShowDialog()
+$form.Dispose()

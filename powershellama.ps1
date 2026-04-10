@@ -9,6 +9,11 @@ $TRIGGER = ","
 $Quiet = $false
 $MaxRounds = 10
 
+# Session usage tracking
+$script:SessionTokens = 0
+$script:SessionRequests = 0
+$script:SessionElapsed = 0.0
+
 $CYAN = "`e[36m"
 $YELLOW = "`e[33m"
 $GRAY = "`e[90m"
@@ -45,6 +50,7 @@ function Show-Banner {
     Write-Host "  ${YELLOW},explain${RESET}  <file>  explain any file     ${YELLOW},generate${RESET} <desc>  generate code"
     Write-Host "  ${YELLOW},analyze${RESET}  <path>  analyze files/dirs   ${YELLOW},img${RESET} <prompt>     generate image"
     Write-Host "  ${YELLOW},list${RESET}             all services         ${YELLOW},quiet${RESET}            toggle quiet"
+    Write-Host "  ${YELLOW},models${RESET}           select model         ${YELLOW},tokens${RESET}           session usage"
     Write-Host ""
 }
 
@@ -106,6 +112,9 @@ function Invoke-AISimple {
         $resp = Invoke-RestMethod -Uri "$SHELLAMA_API$Endpoint" -Method Post -Body $body -ContentType "application/json" -TimeoutSec 3600
         if (-not $Quiet) { Stop-LlamaSpinner }
         if ($resp.error) { Write-Host "shellama: $($resp.error)" -ForegroundColor Red; return }
+        $script:SessionTokens += [int]($resp.total_tokens)
+        $script:SessionRequests += 1
+        $script:SessionElapsed += [double]($resp.elapsed)
         Write-Host "${CYAN}$($resp.$ResultKey)${RESET}"
         Write-Host "${GRAY}[$($resp.elapsed)s | $($resp.total_tokens) tokens | $SHELLAMA_MODEL]${RESET}"
     } catch [System.Management.Automation.PipelineStoppedException] {
@@ -138,6 +147,9 @@ function Invoke-AIAgent {
         $elapsed = if ($resp.elapsed) { $resp.elapsed } else { 0 }
         $totalTokens += $tokens
         $totalElapsed += $elapsed
+        $script:SessionTokens += [int]$tokens
+        $script:SessionRequests += 1
+        $script:SessionElapsed += [double]$elapsed
 
         # Extract powershell code blocks
         $commands = [regex]::Matches($response, '```powershell\n(.*?)```', 'Singleline') | ForEach-Object { $_.Groups[1].Value.Trim() }
@@ -199,6 +211,8 @@ function Invoke-AIImage {
         $resp = Invoke-RestMethod -Uri "$SHELLAMA_API/generate-image" -Method Post -Body $body -ContentType "application/json" -TimeoutSec 3600
         Stop-LlamaSpinner
         if ($resp.error) { Write-Host "shellama: $($resp.error)" -ForegroundColor Red; return }
+        $script:SessionRequests += 1
+        $script:SessionElapsed += [double]($resp.elapsed)
         $outfile = "generated_$([int](Get-Date -UFormat %s)).png"
         [IO.File]::WriteAllBytes("$PWD\$outfile", [Convert]::FromBase64String($resp.image))
         Write-Host "${CYAN}$(Resolve-Path $outfile)${RESET}"
@@ -215,21 +229,21 @@ function Invoke-AIImage {
 
 function Invoke-AIAnalyze {
     param([string[]]$Paths)
-    $filesData = @()
+    [array]$filesData = @()
     foreach ($p in $Paths) {
         if (Test-Path $p -PathType Container) {
             Get-ChildItem $p -Recurse -File | ForEach-Object {
                 try { $filesData += @{ path = $_.FullName; content = (Get-Content $_.FullName -Raw) } } catch {}
             }
         } elseif (Test-Path $p) {
-            try { $filesData += @{ path = $p; content = (Get-Content $p -Raw) } } catch {}
+            try { $filesData += @{ path = (Resolve-Path $p).Path; content = (Get-Content $p -Raw) } } catch {}
         } else {
             Write-Host "shellama: ${p}: not found" -ForegroundColor Red
         }
     }
     if ($filesData.Count -eq 0) { Write-Host "shellama: no readable files found" -ForegroundColor Red; return }
     Write-Host "${GRAY}Analyzing $($filesData.Count) file$(if($filesData.Count -ne 1){'s'})...${RESET}"
-    Invoke-AISimple -Endpoint "/analyze" -Payload @{ files = $filesData; model = $SHELLAMA_MODEL } -ResultKey "analysis"
+    Invoke-AISimple -Endpoint "/analyze" -Payload @{ files = @($filesData); model = $SHELLAMA_MODEL } -ResultKey "analysis"
 }
 
 function Show-Services {
@@ -288,6 +302,7 @@ while ($true) {
         if ($query -in @('list', 'help')) { Show-Services }
         elseif ($query -eq 'models') { Select-Model }
         elseif ($query -eq 'quiet') { $Quiet = -not $Quiet; Write-Host "quiet mode: $(if($Quiet){'on'}else{'off'})" }
+        elseif ($query -eq 'tokens') { Write-Host "${CYAN}Session usage: $($script:SessionRequests) requests | $($script:SessionTokens) tokens | $([math]::Round($script:SessionElapsed,1))s${RESET}" }
         elseif ($query.StartsWith('img ')) { Invoke-AIImage -Prompt $query.Substring(4).Trim() }
         elseif ($query.StartsWith('analyze ')) { Invoke-AIAnalyze -Paths ($query.Substring(8).Trim() -split '\s+') }
         elseif ($query.StartsWith('explain ')) {

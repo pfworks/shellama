@@ -16,6 +16,11 @@ TRIGGER = ','
 HISTFILE = os.path.expanduser('~/.shellama_history')
 MAX_ROUNDS = 10
 
+# Session usage tracking
+session_tokens = 0
+session_requests = 0
+session_elapsed = 0.0
+
 CYAN = '\033[36m'
 YELLOW = '\033[33m'
 GRAY = '\033[90m'
@@ -179,6 +184,7 @@ spinner = LlamaSpinner()
 
 def ai_chat(message, model):
     """Single chat round with the backend. Returns (response, tokens, elapsed, error)."""
+    global session_tokens, session_requests, session_elapsed
     try:
         resp = requests.post(
             f"{API_URL}/chat",
@@ -188,7 +194,12 @@ def ai_chat(message, model):
         data = resp.json()
         if data.get('error'):
             return None, 0, 0, data['error']
-        return data.get('response', ''), data.get('total_tokens', 0), data.get('elapsed', 0), None
+        tokens = data.get('total_tokens', 0)
+        elapsed = data.get('elapsed', 0)
+        session_tokens += tokens
+        session_requests += 1
+        session_elapsed += elapsed
+        return data.get('response', ''), tokens, elapsed, None
     except KeyboardInterrupt:
         # User hit Ctrl+C — tell backend to stop
         try:
@@ -274,6 +285,7 @@ def ai_agent(query, quiet=False):
 
 def ai_simple(endpoint, payload, result_key):
     """Simple one-shot API call to a backend endpoint."""
+    global session_tokens, session_requests, session_elapsed
     try:
         spinner.start()
         resp = requests.post(f"{API_URL}{endpoint}", json=payload, timeout=3600)
@@ -282,6 +294,9 @@ def ai_simple(endpoint, payload, result_key):
         if data.get('error'):
             print(f"shellama: {data['error']}", file=sys.stderr)
             return
+        session_tokens += data.get('total_tokens', 0)
+        session_requests += 1
+        session_elapsed += data.get('elapsed', 0)
         print(f"{CYAN}{data.get(result_key, '')}{RESET}")
         print(f"{GRAY}[{data.get('elapsed', 0):.1f}s | {data.get('total_tokens', 0)} tokens | {MODEL}]{RESET}", file=sys.stderr)
     except KeyboardInterrupt:
@@ -301,6 +316,7 @@ def ai_simple(endpoint, payload, result_key):
 
 def ai_image(prompt):
     """Generate an image from a text prompt."""
+    global session_requests, session_elapsed
     import base64
     image_model = os.environ.get('AI_IMAGE_MODEL', 'sd-turbo')
     steps = 4 if 'turbo' in image_model else 20
@@ -316,6 +332,8 @@ def ai_image(prompt):
         if data.get('error'):
             print(f"shellama: {data['error']}", file=sys.stderr)
             return
+        session_requests += 1
+        session_elapsed += data.get('elapsed', 0)
         img_data = base64.b64decode(data['image'])
         outfile = f"generated_{int(__import__('time').time())}.png"
         with open(outfile, 'wb') as f:
@@ -394,9 +412,10 @@ def show_services():
         else:
             arg = '<file/dir>'
         print(f"  {YELLOW},{name}{RESET} {arg} - {desc}")
-    print(f"\n  {YELLOW},,{RESET} <prompt> - quiet chat (output only)")
+    print(f"  {YELLOW},,{RESET} <prompt> - quiet chat (output only)")
     print(f"  {YELLOW},models{RESET} - list and select model")
     print(f"  {YELLOW},quiet{RESET}  - toggle quiet mode")
+    print(f"  {YELLOW},tokens{RESET} - show session token usage")
 
 
 def select_model():
@@ -468,6 +487,7 @@ def main():
     print(f"  {YELLOW},explain{RESET}  <file>  explain any file     {YELLOW},generate{RESET} <desc>  generate code")
     print(f"  {YELLOW},analyze{RESET}  <path>  analyze files/dirs   {YELLOW},img{RESET} <prompt>     generate image")
     print(f"  {YELLOW},list{RESET}             all services         {YELLOW},quiet{RESET}            toggle quiet")
+    print(f"  {YELLOW},models{RESET}           select model         {YELLOW},tokens{RESET}           session usage")
     print()
 
     while True:
@@ -515,6 +535,8 @@ def main():
             elif query == 'quiet':
                 quiet = not quiet
                 print(f"quiet mode: {'on' if quiet else 'off'}")
+            elif query == 'tokens':
+                print(f"{CYAN}Session usage: {session_requests} requests | {session_tokens} tokens | {session_elapsed:.1f}s{RESET}")
             elif query.startswith('img '):
                 ai_image(query[4:].strip())
             elif query.startswith('analyze '):

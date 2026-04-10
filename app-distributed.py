@@ -26,15 +26,29 @@ last_backend_tokens = {}    # {url: last_known_total} for computing deltas
 queue_history = {}  # {url: [{timestamp, queue_size}]}
 QUEUE_HISTORY_MAX = 86400  # ~1 day at 1s intervals
 
+# Persisted cumulative totals (survive frontend+backend restarts)
+persisted_totals = {'requests': 0, 'tokens': 0}
+last_backend_requests = {}  # {url: last_known_total} for computing deltas
+
+# Per-client and per-task cumulative usage
+# by_client: {ip: {requests: N, tokens: N}}
+# by_task: {task_type: {requests: N, tokens: N}}  — aggregated across all IPs
+usage_stats = {'by_client': {}, 'by_task': {}}
+
 
 def load_history():
-    global ip_token_history, backend_token_history, queue_history
+    global ip_token_history, backend_token_history, queue_history, persisted_totals
+    global last_backend_tokens, last_backend_requests, usage_stats
     try:
         with open(HISTORY_FILE, 'r') as f:
             data = json.load(f)
             ip_token_history = data.get('ip_tokens', {})
             backend_token_history = data.get('backend_tokens', {})
             queue_history = data.get('queue', {})
+            persisted_totals = data.get('totals', {'requests': 0, 'tokens': 0})
+            last_backend_tokens = data.get('last_backend_tokens', {})
+            last_backend_requests = data.get('last_backend_requests', {})
+            usage_stats = data.get('usage_stats', {'by_client': {}, 'by_task': {}})
     except (FileNotFoundError, json.JSONDecodeError):
         pass
 
@@ -44,7 +58,11 @@ def save_history():
         data = {
             'ip_tokens': ip_token_history,
             'backend_tokens': backend_token_history,
-            'queue': queue_history
+            'queue': queue_history,
+            'totals': persisted_totals,
+            'last_backend_tokens': last_backend_tokens,
+            'last_backend_requests': last_backend_requests,
+            'usage_stats': usage_stats
         }
     try:
         with open(HISTORY_FILE, 'w') as f:
@@ -62,17 +80,25 @@ def periodic_save():
 load_history()
 Thread(target=periodic_save, daemon=True).start()
 
-def record_ip_tokens(ip, tokens):
-    """Record token usage for a client IP"""
-    if tokens <= 0:
-        return
+def record_ip_tokens(ip, tokens, task_type='unknown'):
+    """Record token usage for a client IP and task type"""
     with ip_token_lock:
-        if ip not in ip_token_history:
-            ip_token_history[ip] = []
-        ip_token_history[ip].append({'timestamp': time.time(), 'tokens': tokens})
-        # Trim old entries
-        if len(ip_token_history[ip]) > IP_HISTORY_MAX:
-            ip_token_history[ip] = ip_token_history[ip][-IP_HISTORY_MAX:]
+        # Always update cumulative by_client and by_task
+        if ip not in usage_stats['by_client']:
+            usage_stats['by_client'][ip] = {'requests': 0, 'tokens': 0}
+        usage_stats['by_client'][ip]['requests'] += 1
+        usage_stats['by_client'][ip]['tokens'] += tokens
+        if task_type not in usage_stats['by_task']:
+            usage_stats['by_task'][task_type] = {'requests': 0, 'tokens': 0}
+        usage_stats['by_task'][task_type]['requests'] += 1
+        usage_stats['by_task'][task_type]['tokens'] += tokens
+        # Record time-series entry only if there were tokens
+        if tokens > 0:
+            if ip not in ip_token_history:
+                ip_token_history[ip] = []
+            ip_token_history[ip].append({'timestamp': time.time(), 'tokens': tokens, 'task': task_type})
+            if len(ip_token_history[ip]) > IP_HISTORY_MAX:
+                ip_token_history[ip] = ip_token_history[ip][-IP_HISTORY_MAX:]
 
 # Load backends from config file
 def load_backends():
@@ -133,22 +159,29 @@ def get_available_backend(requested_model='codellama:13b', wait=True, timeout=30
     start_time = time.time()
     
     while True:
+        # Poll backends WITHOUT holding the lock
+        polled = {}
+        for backend in BACKENDS:
+            url = backend['url']
+            data = get_backend_queue_size(url)
+            if data:
+                polled[url] = data
+
         with backend_lock:
-            # Update queue sizes and capacity
+            # Update status from polled data
             for backend in BACKENDS:
                 url = backend['url']
-                if backend_status[url]['available']:
-                    data = get_backend_queue_size(url)
-                    if data:
-                        backend_status[url]['queue_size'] = data.get('queue_size', 999)
-                        backend_status[url]['cpu_percent'] = data.get('cpu_percent', 50)
-                        backend_status[url]['ram_available_gb'] = data.get('ram_available_gb', 0)
-                        backend_status[url]['ram_total_gb'] = data.get('ram_total_gb', 16)
-                        backend_status[url]['cpu_arch'] = data.get('cpu_arch', 'x86_64')
-                        backend_status[url]['cpu_count'] = data.get('cpu_count', 4)
-                        backend_status[url]['cpu_freq_mhz'] = data.get('cpu_freq_mhz', 2000)
-                    else:
-                        backend_status[url]['queue_size'] = 999
+                if url in polled:
+                    data = polled[url]
+                    backend_status[url]['queue_size'] = data.get('queue_size', 999)
+                    backend_status[url]['cpu_percent'] = data.get('cpu_percent', 50)
+                    backend_status[url]['ram_available_gb'] = data.get('ram_available_gb', 0)
+                    backend_status[url]['ram_total_gb'] = data.get('ram_total_gb', 16)
+                    backend_status[url]['cpu_arch'] = data.get('cpu_arch', 'x86_64')
+                    backend_status[url]['cpu_count'] = data.get('cpu_count', 4)
+                    backend_status[url]['cpu_freq_mhz'] = data.get('cpu_freq_mhz', 2000)
+                else:
+                    backend_status[url]['queue_size'] = 999
             
             # Filter backends that support the requested model
             requested_size = MODEL_SIZES.get(requested_model, 2)
@@ -157,7 +190,7 @@ def get_available_backend(requested_model='codellama:13b', wait=True, timeout=30
                 if backend_status[url]['available']:
                     max_model = backend_status[url]['max_model']
                     max_size = MODEL_SIZES.get(max_model, 4)
-                    if requested_size <= max_size:
+                    if requested_model == 'none' or requested_size <= max_size:
                         qs = backend_status[url]['queue_size']
                         w = backend_status[url]['weight']
                         cpu = backend_status[url].get('cpu_percent', 50)
@@ -195,7 +228,7 @@ def release_backend(url):
     with backend_lock:
         backend_status[url]['available'] = True
 
-def proxy_request(endpoint, data, client_ip=None):
+def proxy_request(endpoint, data, client_ip=None, task_type='unknown'):
     """Send request to available backend with keepalive"""
     model = data.get('model', 'codellama:13b')
     backend = get_available_backend(model)
@@ -224,7 +257,7 @@ def proxy_request(endpoint, data, client_ip=None):
         
         # Record tokens for this client IP
         if client_ip:
-            record_ip_tokens(client_ip, result.get('total_tokens', 0))
+            record_ip_tokens(client_ip, result.get('total_tokens', 0), task_type)
         
         return result, 200
     except requests.exceptions.Timeout:
@@ -277,14 +310,20 @@ def index():
 def status_page():
     return send_from_directory('/export/html', 'status.html')
 
+@app.route('/backends')
+def backends_page():
+    return send_from_directory('/export/html', 'backends.html')
+
+@app.route('/stats')
+def stats_page():
+    return send_from_directory('/export/html', 'stats.html')
+
 @app.route('/queue-status')
 def queue_status():
     """Aggregate queue status from all backends"""
     backends_info = []
     total_queue = 0
     active_count = 0
-    total_requests = 0
-    total_tokens = 0
     
     for backend in BACKENDS:
         url = backend['url']
@@ -302,10 +341,6 @@ def queue_status():
             if is_active:
                 active_count += 1
             
-            # Aggregate stats
-            total_requests += data.get('total_requests', 0)
-            total_tokens += data.get('total_tokens', 0)
-            
             cpu_pct = data.get('cpu_percent', 0)
             ram_avail = data.get('ram_available_gb', 0)
             ram_total = data.get('ram_total_gb', 0)
@@ -321,7 +356,8 @@ def queue_status():
                 'active_client': data.get('active_client', ''),
                 'active_agent': data.get('active_agent', ''),
                 'active_summary': data.get('active_summary', ''),
-                'tokens': data.get('total_tokens', 0),
+                'backend_tokens': data.get('total_tokens', 0),
+                'backend_requests': data.get('total_requests', 0),
                 'cpu_percent': cpu_pct,
                 'ram_available_gb': ram_avail,
                 'ram_total_gb': ram_total,
@@ -338,7 +374,8 @@ def queue_status():
                 'active': False,
                 'status': 'offline',
                 'active_model': 'none',
-                'tokens': 0,
+                'backend_tokens': 0,
+                'backend_requests': 0,
                 'cpu_percent': 0,
                 'ram_available_gb': 0,
                 'ram_total_gb': 0,
@@ -347,22 +384,37 @@ def queue_status():
                 'cpu_freq_mhz': 0
             })
     
-    # Record per-backend token deltas and queue history
+    # Record per-backend token/request deltas and queue history
     now = time.time()
     with ip_token_lock:
         for b in backends_info:
             url = b['url']
-            # Token deltas
-            cur = b.get('tokens', 0)
-            prev = last_backend_tokens.get(url, cur)
-            delta = cur - prev
-            last_backend_tokens[url] = cur
-            if delta > 0:
+            # Token deltas — detect backend restart (current < previous)
+            cur_tokens = b.get('backend_tokens', 0)
+            prev_tokens = last_backend_tokens.get(url, 0)
+            if cur_tokens < prev_tokens:
+                # Backend restarted, treat entire current value as new
+                delta_tokens = cur_tokens
+            else:
+                delta_tokens = cur_tokens - prev_tokens
+            last_backend_tokens[url] = cur_tokens
+            if delta_tokens > 0:
+                persisted_totals['tokens'] += delta_tokens
                 if url not in backend_token_history:
                     backend_token_history[url] = []
-                backend_token_history[url].append({'timestamp': now, 'tokens': delta})
+                backend_token_history[url].append({'timestamp': now, 'tokens': delta_tokens})
                 if len(backend_token_history[url]) > IP_HISTORY_MAX:
                     backend_token_history[url] = backend_token_history[url][-IP_HISTORY_MAX:]
+            # Request deltas
+            cur_reqs = b.get('backend_requests', 0)
+            prev_reqs = last_backend_requests.get(url, 0)
+            if cur_reqs < prev_reqs:
+                delta_reqs = cur_reqs
+            else:
+                delta_reqs = cur_reqs - prev_reqs
+            last_backend_requests[url] = cur_reqs
+            if delta_reqs > 0:
+                persisted_totals['requests'] += delta_reqs
             # Queue history
             if url not in queue_history:
                 queue_history[url] = []
@@ -375,8 +427,8 @@ def queue_status():
         'active': active_count > 0,
         'active_backends': active_count,
         'total_backends': len(BACKENDS),
-        'total_requests': total_requests,
-        'total_tokens': total_tokens,
+        'total_requests': persisted_totals['requests'],
+        'total_tokens': persisted_totals['tokens'],
         'backends': backends_info,
         'timestamp': time.time()
     })
@@ -416,7 +468,7 @@ def generate():
     if split:
         result, status = split_and_process(commands, model)
     else:
-        result, status = proxy_request('/generate', {'commands': commands, 'model': model}, client_ip)
+        result, status = proxy_request('/generate', {'commands': commands, 'model': model}, client_ip, 'shell2ansible')
     
     return jsonify(result), status
 
@@ -424,28 +476,28 @@ def generate():
 def explain():
     playbook = request.json.get('playbook', '')
     model = request.json.get('model', 'codellama:13b')
-    result, status = proxy_request('/explain', {'playbook': playbook, 'model': model}, request.remote_addr)
+    result, status = proxy_request('/explain', {'playbook': playbook, 'model': model}, request.remote_addr, 'explain')
     return jsonify(result), status
 
 @app.route('/generate-code', methods=['POST'])
 def generate_code_endpoint():
     description = request.json.get('description', '')
     model = request.json.get('model', 'codellama:13b')
-    result, status = proxy_request('/generate-code', {'description': description, 'model': model}, request.remote_addr)
+    result, status = proxy_request('/generate-code', {'description': description, 'model': model}, request.remote_addr, 'generate-code')
     return jsonify(result), status
 
 @app.route('/explain-code', methods=['POST'])
 def explain_code_endpoint():
     code = request.json.get('code', '')
     model = request.json.get('model', 'codellama:13b')
-    result, status = proxy_request('/explain-code', {'code': code, 'model': model}, request.remote_addr)
+    result, status = proxy_request('/explain-code', {'code': code, 'model': model}, request.remote_addr, 'explain-code')
     return jsonify(result), status
 
 @app.route('/chat', methods=['POST'])
 def chat_endpoint():
     message = request.json.get('message', '')
     model = request.json.get('model', 'codellama:13b')
-    result, status = proxy_request('/chat', {'message': message, 'model': model}, request.remote_addr)
+    result, status = proxy_request('/chat', {'message': message, 'model': model}, request.remote_addr, 'chat')
     return jsonify(result), status
 
 @app.route('/analyze', methods=['POST'])
@@ -471,7 +523,7 @@ def analyze_endpoint():
             total_tokens = 0
             
             for idx, file_data in enumerate(files):
-                result, status = proxy_request('/analyze', {'files': [file_data], 'model': model}, client_ip)
+                result, status = proxy_request('/analyze', {'files': [file_data], 'model': model}, client_ip, 'analyze')
                 if result.get('error'):
                     return jsonify({'error': f"Error processing {file_data.get('path', f'file {idx}')}: {result['error']}"}), 200
                 
@@ -498,7 +550,7 @@ def analyze_endpoint():
             batch_results = []
 
             def process_file(file_data, idx, out):
-                result, status = proxy_request('/analyze', {'files': [file_data], 'model': model}, client_ip)
+                result, status = proxy_request('/analyze', {'files': [file_data], 'model': model}, client_ip, 'analyze')
                 out.append((idx, result, status))
 
             for i, file_data in enumerate(batch):
@@ -538,7 +590,7 @@ def analyze_endpoint():
         }), 200
     else:
         # Single file processing
-        result, status = proxy_request('/analyze', {'files': files, 'model': model}, client_ip)
+        result, status = proxy_request('/analyze', {'files': files, 'model': model}, client_ip, 'analyze')
         return jsonify(result), status
 
 @app.route('/ip-tokens')
@@ -556,12 +608,36 @@ def get_queue_history():
     with ip_token_lock:
         return jsonify(queue_history)
 
+@app.route('/usage-stats')
+def get_usage_stats():
+    """Return cumulative token/request usage by client IP and by task type."""
+    with ip_token_lock:
+        return jsonify(usage_stats)
+
 @app.route('/generate-image', methods=['POST'])
 def generate_image_endpoint():
     data = request.json
-    # Image generation doesn't use an LLM model, pick any available backend
-    result, status = proxy_request('/generate-image', data, request.remote_addr)
-    return jsonify(result), status
+    client_ip = request.remote_addr
+    if client_ip:
+        data['client_ip'] = client_ip
+
+    # Image generation doesn't use an LLM — try each backend until one succeeds
+    errors = []
+    for b in BACKENDS:
+        try:
+            requests.get(f"{b['url']}/queue-status", timeout=2)
+            resp = requests.post(f"{b['url']}/generate-image", json=data, timeout=3600)
+            result = resp.json()
+            if result.get('error'):
+                errors.append(f"{b['url']}: {result['error']}")
+                continue
+            if client_ip:
+                record_ip_tokens(client_ip, result.get('total_tokens', 0), 'generate-image')
+            return jsonify(result), 200
+        except:
+            errors.append(f"{b['url']}: unreachable")
+            continue
+    return jsonify({'error': 'All backends failed: ' + '; '.join(errors)}), 200
 
 @app.route('/image-models')
 def image_models():
@@ -596,8 +672,8 @@ def upload():
     commands = file.read().decode('utf-8')
     model = request.form.get('model', 'codellama:13b')
     
-    result, status = proxy_request('/generate', {'commands': commands, 'model': model}, request.remote_addr)
+    result, status = proxy_request('/generate', {'commands': commands, 'model': model}, request.remote_addr, 'shell2ansible')
     return jsonify(result), status
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    app.run(host='0.0.0.0', port=5000, threaded=True)

@@ -7,6 +7,9 @@ import uuid
 import os
 import requests
 
+import json
+import time
+
 app = Flask(__name__)
 task_queue = Queue()
 active_task = None
@@ -17,6 +20,36 @@ stop_requested = False
 total_requests = 0
 total_tokens = 0
 stats_lock = Lock()
+
+# Persistence
+STATS_FILE = os.path.join(os.path.dirname(__file__), 'shellama-stats.json')
+
+def load_stats():
+    global total_requests, total_tokens
+    try:
+        with open(STATS_FILE, 'r') as f:
+            data = json.load(f)
+            total_requests = data.get('total_requests', 0)
+            total_tokens = data.get('total_tokens', 0)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+
+def save_stats():
+    try:
+        with stats_lock:
+            data = {'total_requests': total_requests, 'total_tokens': total_tokens}
+        with open(STATS_FILE, 'w') as f:
+            json.dump(data, f)
+    except Exception:
+        pass
+
+def periodic_save_stats():
+    while True:
+        time.sleep(60)
+        save_stats()
+
+load_stats()
+Thread(target=periodic_save_stats, daemon=True).start()
 
 # OpenRouter configuration
 OPENROUTER_API_KEY = os.environ.get('OPENROUTER_API_KEY', '')
@@ -75,6 +108,7 @@ def worker():
         task['event'].set()
         active_task = None
         task_queue.task_done()
+        save_stats()
 
 def should_use_cloud(result):
     """Determine if response quality is low"""
