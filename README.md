@@ -20,7 +20,9 @@ Local LLM-powered tool for code generation, explanation, shell-to-Ansible conver
 
 **Interfaces:**
 - Bash CLI (`cli/shellama`) — Linux/macOS
-- PowerShell CLI (`powershell/powershellama.ps1`) — Windows
+- Bash integration (`cli/shellama.bash`) — source in .bashrc for , commands in real bash
+- PowerShell CLI (`powershell/powershellama.ps1`) — Windows (standalone)
+- PowerShell integration (`powershell/shellama.ps1`) — dot-source in $PROFILE for , commands
 - PowerShell GUI (`powershell/powershellama-gui.ps1`, `powershell/powershellama-gui.cmd`) — Windows
 - Python GUI (`cli/shellama-gui.pyw`) — cross-platform
 - Admin console: Status (with cloud cost tab), Backends, Stats pages
@@ -43,9 +45,12 @@ Local LLM-powered tool for code generation, explanation, shell-to-Ansible conver
 shellama/
 ├── cli/                        # Linux/macOS clients
 │   ├── shellama                # Bash CLI + agentic shell
+│   ├── shellama.bash           # Bash integration (source in .bashrc)
 │   └── shellama-gui.pyw       # Python GUI (cross-platform)
 ├── powershell/                 # Windows clients
 │   ├── powershellama.ps1      # PowerShell CLI + agentic shell
+│   ├── shellama.ps1           # PowerShell integration (dot-source in $PROFILE)
+│   ├── shellama-config.ps1    # Shared config (API URL, model, system prompt)
 │   ├── powershellama-gui.ps1  # PowerShell WinForms GUI
 │   └── powershellama-gui.cmd  # Double-click GUI launcher
 ├── backend/                    # Backend worker
@@ -143,6 +148,15 @@ The CLI is a full bash shell with AI integration. Regular commands run in bash. 
 | `,quiet` | Toggle quiet mode |
 | `,list` / `,help` | Show available commands |
 
+### Bash Integration (`cli/shellama.bash`)
+
+```bash
+# Add to .bashrc:
+source /path/to/shellama/cli/shellama.bash
+```
+
+Gives you all `,` commands in your real bash session. Full job control, history, tab completion, aliases, native PS1. The `,` functions call the Python CLI under the hood.
+
 ### PowerShell CLI (`powershell/powershellama.ps1`)
 
 ```powershell
@@ -151,6 +165,15 @@ $env:SHELLAMA_API = "http://your-server:5000"
 ```
 
 Same command set as bash CLI. Agentic loop executes PowerShell commands instead of bash.
+
+### PowerShell Integration (`powershell/shellama.ps1`)
+
+```powershell
+# Add to $PROFILE:
+. C:\path\to\shellama\powershell\shellama.ps1
+```
+
+Same as bash integration but for PowerShell. Defines `,` functions in your real PS session. Pure PowerShell + REST, no Python dependency.
 
 ### PowerShell GUI
 

@@ -12,9 +12,12 @@ sheLLaMa is a local LLM-powered tool (Ollama backend) for shell→Ansible conver
 shellama/
 ├── cli/                        # Linux/macOS clients
 │   ├── shellama                # Bash CLI + agentic shell (Python)
+│   ├── shellama.bash           # Bash integration (source in .bashrc)
 │   └── shellama-gui.pyw       # Python GUI (cross-platform, tkinter)
 ├── powershell/                 # Windows clients
 │   ├── powershellama.ps1      # PowerShell CLI + agentic shell
+│   ├── shellama.ps1           # PowerShell integration (dot-source in $PROFILE)
+│   ├── shellama-config.ps1    # Shared config (API URL, model, system prompt)
 │   ├── powershellama-gui.ps1  # PowerShell WinForms GUI
 │   └── powershellama-gui.cmd  # Double-click GUI launcher (async HttpWebRequest)
 ├── backend/                    # Backend worker
@@ -78,6 +81,14 @@ Clients → app-distributed.py (Frontend :5000) → Backend Farm
 - Spinner during API calls
 - Ctrl+C sends `/stop-all` to backend
 - Session token/request/elapsed tracking (`,tokens`)
+- Also supports non-interactive mode: `shellama <command> [args]` for use from shellama.bash
+
+### Bash Integration (`cli/shellama.bash`)
+- Source in `.bashrc` for `,` commands in your real bash session
+- Defines bash functions (`,`, `,,`, `,explain`, `,generate`, etc.) that call the Python CLI
+- Full job control, history, tab completion, aliases, native PS1
+- Red HAL eye (🔴) prepended to prompt
+- No separate shell — you stay in your real bash session
 
 ### PowerShell CLI (`powershell/powershellama.ps1`)
 - Terminal-based, runs on Windows
@@ -85,6 +96,17 @@ Clients → app-distributed.py (Frontend :5000) → Backend Farm
 - Agentic loop executes PowerShell commands instead of bash
 - Spinner via background runspace
 - Ctrl+C sends `/stop-all` to backend
+
+### PowerShell Integration (`powershell/shellama.ps1`)
+- Dot-source in `$PROFILE` for `,` commands in your real PowerShell session
+- Defines PowerShell functions (`,`, `,,`, `,explain`, `,generate`, etc.)
+- Pure PowerShell + REST — no Python dependency
+- Sources `shellama-config.ps1` for shared config
+- Red HAL eye (🔴) in prompt
+
+### Shared PowerShell Config (`powershell/shellama-config.ps1`)
+- Single source of truth for API URL, model default, and system prompt
+- Sourced by `shellama.ps1`, `powershellama-gui.ps1`, and `powershellama-gui.cmd`
 
 ### PowerShell GUI (`powershell/powershellama-gui.ps1`)
 - WinForms GUI, dark mode, Consolas font
