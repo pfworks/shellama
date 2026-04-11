@@ -18,7 +18,14 @@
         .cost-table th, .cost-table td { text-align: left; padding: 6px 12px; border-bottom: 1px solid #333; }
         .cost-table th { color: #00ff00; opacity: 0.7; }
         .cost-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
-        .section-title { font-size: 16px; margin: 20px 0 10px; opacity: 0.8; }
+        .cheapest td { color: #44ff44; }
+        .costliest td { color: #ff4444; }
+        .section-header { display: flex; justify-content: space-between; align-items: center; }
+        .section-title { font-size: 16px; opacity: 0.8; }
+        .btn { background: #2b2b2b; color: #00ff00; border: 1px solid #00ff00; padding: 4px 12px; cursor: pointer; border-radius: 3px; font-family: 'Courier New', monospace; font-size: 12px; margin-left: 5px; }
+        .btn:hover { background: #00ff0033; }
+        .btn.danger { border-color: #ff4444; color: #ff4444; }
+        .btn.danger:hover { background: #ff444433; }
         .refresh-info { text-align: center; margin-top: 20px; font-size: 14px; opacity: 0.7; }
         a { color: #00ff00; }
     </style>
@@ -34,15 +41,28 @@
         </div>
 
         <div class="summary">
-            <div class="summary-item">Total Queue: <span id="total-queue">-</span></div>
-            <div class="summary-item">Active Backends: <span id="active-backends">-</span> / <span id="total-backends">-</span></div>
-            <div class="summary-item">Total Requests: <span id="total-requests">-</span></div>
-            <div class="summary-item">Total Tokens: <span id="total-tokens">-</span></div>
+            <div class="section-header">
+                <div>
+                    <div class="summary-item">Total Queue: <span id="total-queue">-</span></div>
+                    <div class="summary-item">Active Backends: <span id="active-backends">-</span> / <span id="total-backends">-</span></div>
+                    <div class="summary-item">Total Requests: <span id="total-requests">-</span></div>
+                    <div class="summary-item">Total Tokens: <span id="total-tokens">-</span></div>
+                </div>
+                <div>
+                    <button class="btn" onclick="resetStats()">Clear Stats</button>
+                </div>
+            </div>
         </div>
 
         <div class="summary">
-            <div class="section-title">Cloud Cost Running Tab <span id="pricing-source" style="opacity:0.5"></span></div>
-            <div style="margin-bottom:8px; opacity:0.7; font-size:13px;">What your total usage would cost on cloud providers (excludes benchmarks)</div>
+            <div class="section-header">
+                <div class="section-title">Cloud Cost Running Tab <span id="pricing-source" style="opacity:0.5"></span></div>
+                <div>
+                    <button class="btn" onclick="resetCloudCosts()">Clear Costs</button>
+                    <button class="btn danger" onclick="resetAll()">Clear All</button>
+                </div>
+            </div>
+            <div style="margin:8px 0; opacity:0.7; font-size:13px;">What your total usage would cost on cloud providers (excludes benchmarks)</div>
             <div style="margin-bottom:10px;">Prompt tokens: <span id="cost-prompt-tokens">-</span> &nbsp;|&nbsp; Response tokens: <span id="cost-response-tokens">-</span></div>
             <table class="cost-table">
                 <thead><tr><th>Provider</th><th style="text-align:right">Input</th><th style="text-align:right">Output</th><th style="text-align:right">Total</th></tr></thead>
@@ -59,7 +79,7 @@
                 document.getElementById('total-queue').textContent = data.queue_size;
                 document.getElementById('active-backends').textContent = data.active_backends;
                 document.getElementById('total-backends').textContent = data.total_backends;
-                document.getElementById('total-requests').textContent = data.total_requests || 0;
+                document.getElementById('total-requests').textContent = (data.total_requests || 0).toLocaleString();
                 document.getElementById('total-tokens').textContent = (data.total_tokens || 0).toLocaleString();
             }).catch(() => {});
         }
@@ -70,12 +90,36 @@
                 document.getElementById('pricing-source').textContent = '(' + (data.pricing_source || 'unknown') + ')';
                 const tbody = document.getElementById('cost-table-body');
                 tbody.innerHTML = '';
-                (data.cloud_costs || []).forEach(c => {
+                const costs = data.cloud_costs || [];
+                let minIdx = 0, maxIdx = 0;
+                costs.forEach((c, i) => {
+                    if (c.total_cost < costs[minIdx].total_cost) minIdx = i;
+                    if (c.total_cost > costs[maxIdx].total_cost) maxIdx = i;
+                });
+                const hasTokens = (data.prompt_tokens || 0) + (data.response_tokens || 0) > 0;
+                costs.forEach((c, i) => {
                     const tr = document.createElement('tr');
+                    if (hasTokens && i === minIdx) tr.className = 'cheapest';
+                    if (hasTokens && i === maxIdx) tr.className = 'costliest';
                     tr.innerHTML = `<td>${c.provider}</td><td class="num">$${c.input_cost.toFixed(6)}</td><td class="num">$${c.output_cost.toFixed(6)}</td><td class="num">$${c.total_cost.toFixed(6)}</td>`;
                     tbody.appendChild(tr);
                 });
             }).catch(() => {});
+        }
+        function resetStats() {
+            if (prompt('Type DELETE to clear total requests and tokens:') === 'DELETE') {
+                fetch('/reset-stats', {method:'POST'}).then(() => updateStatus());
+            }
+        }
+        function resetCloudCosts() {
+            if (prompt('Type DELETE to clear cloud cost running tab:') === 'DELETE') {
+                fetch('/reset-cloud-costs', {method:'POST'}).then(() => updateCosts());
+            }
+        }
+        function resetAll() {
+            if (prompt('Type DELETE to clear ALL stats and cloud costs:') === 'DELETE') {
+                fetch('/reset-all', {method:'POST'}).then(() => { updateStatus(); updateCosts(); });
+            }
         }
         updateStatus();
         updateCosts();

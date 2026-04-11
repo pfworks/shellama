@@ -772,6 +772,35 @@ def cloud_costs_tab():
         'note': 'Excludes tokens from /test benchmarks',
     })
 
+@app.route('/reset-stats', methods=['POST'])
+def reset_stats():
+    """Reset request/token counters."""
+    with ip_token_lock:
+        persisted_totals['requests'] = 0
+        persisted_totals['tokens'] = 0
+    save_history()
+    return jsonify({'status': 'ok'})
+
+@app.route('/reset-cloud-costs', methods=['POST'])
+def reset_cloud_costs():
+    """Reset cloud cost running tab."""
+    with ip_token_lock:
+        persisted_totals['prompt_tokens'] = 0
+        persisted_totals['response_tokens'] = 0
+    save_history()
+    return jsonify({'status': 'ok'})
+
+@app.route('/reset-all', methods=['POST'])
+def reset_all():
+    """Reset all counters."""
+    with ip_token_lock:
+        persisted_totals['requests'] = 0
+        persisted_totals['tokens'] = 0
+        persisted_totals['prompt_tokens'] = 0
+        persisted_totals['response_tokens'] = 0
+    save_history()
+    return jsonify({'status': 'ok'})
+
 @app.route('/upload', methods=['POST'])
 def upload():
     if 'file' not in request.files:
