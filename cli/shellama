@@ -705,4 +705,43 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    import sys as _sys
+    if len(_sys.argv) > 1:
+        # Non-interactive mode: shellama <command> [args...]
+        cmd = _sys.argv[1]
+        args = ' '.join(_sys.argv[2:]) if len(_sys.argv) > 2 else ''
+        quiet = os.environ.get('AI_QUIET', '').lower() in ('1', 'true', 'yes')
+        if cmd == 'agent':
+            ai_agent(args, quiet=quiet)
+        elif cmd == 'quiet':
+            ai_agent(args, quiet=True)
+        elif cmd == 'explain':
+            content = read_file_arg(args)
+            if content:
+                ext = args.rsplit('.', 1)[-1].lower()
+                if ext in ('yml', 'yaml'):
+                    ai_simple('/explain', {'playbook': content, 'model': MODEL}, 'explanation')
+                else:
+                    ai_simple('/explain-code', {'code': content, 'model': MODEL}, 'explanation')
+        elif cmd == 'generate':
+            if any(kw in args.lower() for kw in ('ansible', 'playbook', 'shell command')):
+                ai_simple('/generate', {'commands': args, 'model': MODEL}, 'playbook')
+            else:
+                ai_simple('/generate-code', {'description': args, 'model': MODEL}, 'code')
+        elif cmd == 'analyze':
+            ai_analyze(args.split())
+        elif cmd == 'img':
+            ai_image(args)
+        elif cmd == 'test':
+            ai_test(args or None)
+        elif cmd == 'models':
+            select_model()
+        elif cmd == 'tokens':
+            print(f"{CYAN}Session usage: {session_requests} requests | {session_tokens} tokens | {session_elapsed:.1f}s{RESET}")
+        elif cmd in ('list', 'help'):
+            show_services()
+        else:
+            # Default: treat entire argv as agentic chat
+            ai_agent(' '.join(_sys.argv[1:]), quiet=quiet)
+    else:
+        main()
