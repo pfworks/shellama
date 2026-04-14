@@ -11,6 +11,12 @@ import sys
 
 app = Flask(__name__)
 
+# Auth setup
+_proj = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
+if _proj not in sys.path:
+    sys.path.insert(0, _proj)
+from shared.auth import require_auth, require_admin, get_key_name, auth_enabled
+
 # Backend TLS client cert config (for frontend→backend mTLS)
 _backend_cert = os.environ.get('SHELLAMA_BACKEND_CERT')
 _backend_key = os.environ.get('SHELLAMA_BACKEND_KEY')
@@ -96,7 +102,7 @@ def periodic_save():
 load_history()
 Thread(target=periodic_save, daemon=True).start()
 
-def record_ip_tokens(ip, tokens, task_type='unknown', prompt_tokens=0, response_tokens=0, cloud_fallback=False):
+def record_ip_tokens(ip, tokens, task_type='unknown', prompt_tokens=0, response_tokens=0, cloud_fallback=False, key_name='anonymous'):
     """Record token usage for a client IP and task type"""
     with ip_token_lock:
         # Always update cumulative by_client and by_task
@@ -117,6 +123,15 @@ def record_ip_tokens(ip, tokens, task_type='unknown', prompt_tokens=0, response_
             persisted_totals['fallback_prompt_tokens'] = persisted_totals.get('fallback_prompt_tokens', 0) + prompt_tokens
             persisted_totals['fallback_response_tokens'] = persisted_totals.get('fallback_response_tokens', 0) + response_tokens
             persisted_totals['fallback_requests'] = persisted_totals.get('fallback_requests', 0) + 1
+        # Per-API-key tracking
+        if key_name != 'anonymous':
+            by_key = usage_stats.setdefault('by_key', {})
+            if key_name not in by_key:
+                by_key[key_name] = {'requests': 0, 'tokens': 0, 'prompt_tokens': 0, 'response_tokens': 0}
+            by_key[key_name]['requests'] += 1
+            by_key[key_name]['tokens'] += tokens
+            by_key[key_name]['prompt_tokens'] += prompt_tokens
+            by_key[key_name]['response_tokens'] += response_tokens
         # Record time-series entry only if there were tokens
         if tokens > 0:
             if ip not in ip_token_history:
@@ -309,7 +324,8 @@ def proxy_request(endpoint, data, client_ip=None, task_type='unknown'):
             record_ip_tokens(client_ip, result.get('total_tokens', 0), task_type,
                            prompt_tokens=result.get('prompt_tokens', 0),
                            response_tokens=result.get('response_tokens', 0),
-                           cloud_fallback=result.get('cloud_fallback', False))
+                           cloud_fallback=result.get('cloud_fallback', False),
+                           key_name=get_key_name())
         
         return result, 200
     except requests.exceptions.Timeout:
@@ -492,6 +508,7 @@ def queue_status():
     })
 
 @app.route('/stop-all', methods=['POST'])
+@require_admin
 def stop_all():
     """Stop processing on all backends"""
     results = {}
@@ -505,6 +522,7 @@ def stop_all():
     return jsonify(results)
 
 @app.route('/stop-backend', methods=['POST'])
+@require_admin
 def stop_backend():
     """Stop processing on a specific backend"""
     url = request.json.get('url', '')
@@ -517,6 +535,7 @@ def stop_backend():
         return jsonify({'error': str(e)}), 500
 
 @app.route('/generate', methods=['POST'])
+@require_auth
 def generate():
     commands = request.json.get('commands', '')
     model = request.json.get('model', 'codellama:13b')
@@ -531,6 +550,7 @@ def generate():
     return jsonify(result), status
 
 @app.route('/explain', methods=['POST'])
+@require_auth
 def explain():
     playbook = request.json.get('playbook', '')
     model = request.json.get('model', 'codellama:13b')
@@ -538,6 +558,7 @@ def explain():
     return jsonify(result), status
 
 @app.route('/generate-code', methods=['POST'])
+@require_auth
 def generate_code_endpoint():
     description = request.json.get('description', '')
     model = request.json.get('model', 'codellama:13b')
@@ -545,6 +566,7 @@ def generate_code_endpoint():
     return jsonify(result), status
 
 @app.route('/explain-code', methods=['POST'])
+@require_auth
 def explain_code_endpoint():
     code = request.json.get('code', '')
     model = request.json.get('model', 'codellama:13b')
@@ -552,6 +574,7 @@ def explain_code_endpoint():
     return jsonify(result), status
 
 @app.route('/chat', methods=['POST'])
+@require_auth
 def chat_endpoint():
     message = request.json.get('message', '')
     model = request.json.get('model', 'codellama:13b')
@@ -559,6 +582,7 @@ def chat_endpoint():
     return jsonify(result), status
 
 @app.route('/analyze', methods=['POST'])
+@require_auth
 def analyze_endpoint():
     files = request.json.get('files', [])
     model = request.json.get('model', 'codellama:13b')
@@ -673,6 +697,7 @@ def get_usage_stats():
         return jsonify(usage_stats)
 
 @app.route('/generate-image', methods=['POST'])
+@require_auth
 def generate_image_endpoint():
     data = request.json
     client_ip = request.remote_addr
@@ -722,6 +747,7 @@ def list_models():
     return jsonify({'models': sorted(seen.values(), key=lambda m: m['name'])})
 
 @app.route('/test', methods=['POST'])
+@require_auth
 def test_models():
     """Benchmark models with optional custom prompt. Returns results + cloud cost estimates."""
     _proj = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
@@ -834,6 +860,7 @@ def cloud_costs_tab():
     })
 
 @app.route('/reset-stats', methods=['POST'])
+@require_admin
 def reset_stats():
     """Reset request/token counters."""
     with ip_token_lock:
@@ -843,6 +870,7 @@ def reset_stats():
     return jsonify({'status': 'ok'})
 
 @app.route('/reset-cloud-costs', methods=['POST'])
+@require_admin
 def reset_cloud_costs():
     """Reset cloud cost running tab."""
     with ip_token_lock:
@@ -855,6 +883,7 @@ def reset_cloud_costs():
     return jsonify({'status': 'ok'})
 
 @app.route('/reset-all', methods=['POST'])
+@require_admin
 def reset_all():
     """Reset all counters."""
     with ip_token_lock:
@@ -917,6 +946,7 @@ def cost_history():
     })
 
 @app.route('/api/backends', methods=['GET', 'POST'])
+@require_admin
 def api_backends():
     """Get or update backend configuration (tasks, weight, max_model)."""
     if request.method == 'POST':
@@ -942,6 +972,7 @@ def api_backends():
     return jsonify({'backends': BACKENDS})
 
 @app.route('/auto-fallback', methods=['GET', 'POST'])
+@require_admin
 def auto_fallback_setting():
     """Get or set auto-fallback mode. When enabled, clients skip confirmation."""
     if request.method == 'POST':
@@ -953,6 +984,7 @@ def auto_fallback_setting():
     return jsonify({'auto_fallback': persisted_totals.get('auto_fallback', False)})
 
 @app.route('/upload', methods=['POST'])
+@require_auth
 def upload():
     if 'file' not in request.files:
         return jsonify({'error': 'No file provided'}), 400

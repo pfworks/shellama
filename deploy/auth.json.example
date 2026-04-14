@@ -1,0 +1,20 @@
+{
+  "api_keys": {
+    "sk-admin-change-me": {
+      "name": "admin",
+      "role": "admin",
+      "models": ["all"]
+    },
+    "sk-user-change-me": {
+      "name": "user",
+      "role": "user",
+      "models": ["llama3.2:1b", "llama3.2:3b", "qwen2.5-coder:7b"],
+      "cloud_fallback": true
+    },
+    "sk-viewer-change-me": {
+      "name": "viewer",
+      "role": "viewer",
+      "models": []
+    }
+  }
+}

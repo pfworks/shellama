@@ -252,6 +252,7 @@ See `docs/cloud-fallback-setup.md` for full guide.
 | `SHELLAMA_BACKEND_KEY` | *(empty)* | Client key for frontend→backend mTLS (frontend) |
 | `SHELLAMA_BACKEND_CA` | *(empty)* | CA to verify backend server certs (frontend) |
 | `SHELLAMA_DOWNLOAD_DIR` | *(current dir)* | Default save directory for generated images |
+| `SHELLAMA_AUTH_FILE` | `/etc/shellama/auth.json` | API key auth config file (optional, auth disabled if missing) |
 
 ## Benchmarking (`,test`)
 

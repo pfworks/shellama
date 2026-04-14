@@ -379,6 +379,7 @@ tail -f /var/log/ansible-ollama.log
 | `SHELLAMA_BACKEND_KEY` | *(empty)* | Client key for frontend→backend mTLS |
 | `SHELLAMA_BACKEND_CA` | *(empty)* | CA to verify backend server certs |
 | `SHELLAMA_DOWNLOAD_DIR` | *(current dir)* | Default save directory for generated images |
+| `SHELLAMA_AUTH_FILE` | `/etc/shellama/auth.json` | API key auth config file (optional, auth disabled if missing) |
 
 ### Recommended Models for CPU
 
