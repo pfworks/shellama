@@ -950,6 +950,92 @@ def cost_history():
         },
     })
 
+def _require_secure_admin():
+    """Check SSO is active, HTTPS is on, and user is admin. Returns error tuple or None."""
+    errors = []
+    if not sso_enabled():
+        errors.append('SSO')
+    if not request.is_secure and not os.environ.get('SHELLAMA_TLS_CERT'):
+        errors.append('HTTPS')
+    if errors:
+        return jsonify({'error': f'Key management requires {" and ".join(errors)} to be configured'}), 403
+    if get_web_role() != 'admin':
+        return jsonify({'error': 'Admin access required'}), 403
+    return None
+
+@app.route('/api/keys', methods=['GET'])
+@require_sso
+def api_keys_list():
+    """List API keys (SSO admin + HTTPS only, keys are masked)."""
+    err = _require_secure_admin()
+    if err:
+        return err
+    from shared.auth import _load_config
+    cfg = _load_config()
+    if not cfg:
+        return jsonify({'keys': []})
+    keys = []
+    for k, v in cfg.get('api_keys', {}).items():
+        keys.append({
+            'key_masked': k[:6] + '...' + k[-4:],
+            'key_id': k[:8],
+            'name': v.get('name', ''),
+            'role': v.get('role', 'viewer'),
+            'models': v.get('models', ['all']),
+            'cloud_fallback': v.get('cloud_fallback', True),
+        })
+    return jsonify({'keys': keys})
+
+@app.route('/api/keys', methods=['POST'])
+@require_sso
+def api_keys_create():
+    """Create a new API key (SSO admin + HTTPS only)."""
+    err = _require_secure_admin()
+    if err:
+        return err
+    import secrets
+    from shared.auth import _load_config, AUTH_FILE
+    data = request.json or {}
+    name = data.get('name', '')
+    role = data.get('role', 'user')
+    models = data.get('models', ['all'])
+    if not name:
+        return jsonify({'error': 'Name required'}), 400
+    if role not in ('admin', 'user', 'viewer'):
+        return jsonify({'error': 'Role must be admin, user, or viewer'}), 400
+    key = 'sk-' + secrets.token_hex(16)
+    cfg = _load_config() or {'api_keys': {}}
+    cfg.setdefault('api_keys', {})
+    cfg['api_keys'][key] = {'name': name, 'role': role, 'models': models}
+    if 'cloud_fallback' in data:
+        cfg['api_keys'][key]['cloud_fallback'] = data['cloud_fallback']
+    with open(AUTH_FILE, 'w') as f:
+        json.dump(cfg, f, indent=2)
+    return jsonify({'key': key, 'name': name, 'role': role})
+
+@app.route('/api/keys/revoke', methods=['POST'])
+@require_sso
+def api_keys_revoke():
+    """Revoke an API key by key_id prefix (SSO admin + HTTPS only)."""
+    err = _require_secure_admin()
+    if err:
+        return err
+    from shared.auth import _load_config, AUTH_FILE
+    key_id = (request.json or {}).get('key_id', '')
+    if not key_id:
+        return jsonify({'error': 'key_id required'}), 400
+    cfg = _load_config()
+    if not cfg:
+        return jsonify({'error': 'No auth config'}), 404
+    for k in list(cfg.get('api_keys', {}).keys()):
+        if k.startswith(key_id):
+            name = cfg['api_keys'][k].get('name', 'unknown')
+            del cfg['api_keys'][k]
+            with open(AUTH_FILE, 'w') as f:
+                json.dump(cfg, f, indent=2)
+            return jsonify({'status': 'ok', 'revoked': name})
+    return jsonify({'error': 'Key not found'}), 404
+
 @app.route('/api/backends', methods=['GET', 'POST'])
 @require_admin
 def api_backends():
