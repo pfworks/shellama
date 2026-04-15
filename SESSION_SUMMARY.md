@@ -38,9 +38,11 @@ shellama/
 │   ├── inventory.ini.example
 │   ├── inventory-frontend.ini.example
 │   ├── backends.json.example
+│   ├── auth.json.example      # API key + SSO config template
 │   └── com.ooma.ansible-ollama.plist  # macOS LaunchDaemon
 ├── shared/                     # Shared Python modules
-│   └── constants.py           # Cloud pricing, test prompt, model_size()
+│   ├── constants.py           # Cloud pricing, test prompt, model_size()
+│   └── auth.py                # Authentication (API keys + SSO/OIDC)
 ├── docs/                       # Documentation
 │   ├── cloud-fallback-setup.md   # OpenRouter + LiteLLM guide
 │   ├── cloud-fallback-setup.pdf  # PDF version

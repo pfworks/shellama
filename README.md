@@ -71,9 +71,11 @@ shellama/
 │   ├── inventory.ini.example
 │   ├── inventory-frontend.ini.example
 │   ├── backends.json.example
+│   ├── auth.json.example      # API key + SSO config template
 │   └── com.ooma.ansible-ollama.plist  # macOS LaunchDaemon
 ├── shared/                     # Shared Python modules
-│   └── constants.py           # Cloud pricing, test prompt, model_size()
+│   ├── constants.py           # Cloud pricing, test prompt, model_size()
+│   └── auth.py                # Authentication (API keys + SSO/OIDC)
 ├── docs/                       # Documentation
 │   ├── cloud-fallback-setup.md   # OpenRouter + LiteLLM guide
 │   ├── cloud-fallback-setup.pdf  # PDF version
@@ -439,6 +441,39 @@ curl http://server:5000/cloud-costs
 ```
 
 Tokens from `/test` benchmarks are excluded so the tab reflects real usage only. The tab persists across restarts.
+
+## Authentication
+
+Optional — disabled when `/etc/shellama/auth.json` doesn't exist.
+
+**API Keys** (for CLI/API clients):
+```bash
+# Set in header
+curl -H "X-API-Key: sk-your-key" http://server:5000/chat ...
+
+# Or in environment for CLI
+export SHELLAMA_API_KEY=sk-your-key
+```
+
+**SSO** (for web UI — Keycloak or Azure AD):
+- Web pages redirect to SSO login when configured
+- Role mapped from group claims (admin/user/viewer)
+- Admin buttons hidden for non-admin roles
+
+**Roles:**
+| Role | API Access | Web UI | Models | Cloud Fallback |
+|------|-----------|--------|--------|----------------|
+| admin | All endpoints | Full (modify settings) | All | Yes |
+| user | Chat, generate, explain, analyze, image, test | View only | Configured per key | Configurable |
+| viewer | Read-only (status, models, costs) | View only | None | No |
+
+**Setup:**
+```bash
+cp deploy/auth.json.example /etc/shellama/auth.json
+# Edit API keys, optionally add SSO config
+```
+
+See `deploy/auth.json.example` for Keycloak and Azure AD configuration.
 
 ## Certificate Management
 
