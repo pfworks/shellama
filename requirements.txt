@@ -1,0 +1,9 @@
+# Backend
+flask
+ollama
+pyyaml
+requests
+psutil
+
+# Frontend (additional)
+authlib

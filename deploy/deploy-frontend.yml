@@ -48,6 +48,7 @@
         name:
           - flask
           - requests
+          - authlib
         virtualenv: "{{ venv_path }}"
       become_user: "{{ app_user }}"
       become: no

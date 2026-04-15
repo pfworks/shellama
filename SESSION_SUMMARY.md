@@ -299,6 +299,11 @@ Frontend `/test` endpoint handles all benchmarking server-side. CLI just calls t
 
 9. **Optional TLS/mTLS**: Encryption is opt-in via env vars. Backend can serve HTTPS and require client certs. Frontend can serve HTTPS to clients and present client certs to backends. All frontend→backend requests go through `_backend_get`/`_backend_post` helpers that attach certs. Cert management via `bin/generate-certs.sh` script (init, server, client, list, revoke, delete). PKI stored in `/etc/shellama/pki` by default.
 
+10. **Authentication**: Two layers, both optional (disabled when `/etc/shellama/auth.json` missing):
+    - **API keys** for CLI/API: `X-API-Key` header, 3 roles (admin/user/viewer), per-key model restrictions, per-key cloud fallback control, per-key token tracking in `usage_stats.by_key`
+    - **SSO (OIDC)** for web UI: Keycloak or Azure AD, role mapping from group claims, `/sso/login`, `/sso/callback`, `/sso/logout`, `/sso/userinfo` endpoints
+    - Config in `auth.json`: `api_keys` section + optional `sso` section with issuer/client_id/client_secret/role_mapping
+
 
 ## Known Issues
 

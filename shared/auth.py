@@ -1,9 +1,9 @@
-"""sheLLaMa authentication — API keys with roles and per-key tracking."""
+"""sheLLaMa authentication — API keys + SSO (OIDC) with roles and per-key tracking."""
 import json
 import os
 import time
 from functools import wraps
-from flask import request, jsonify
+from flask import request, jsonify, redirect, session, url_for
 
 AUTH_FILE = os.environ.get('SHELLAMA_AUTH_FILE', '/etc/shellama/auth.json')
 
@@ -29,11 +29,12 @@ ROLE_PERMISSIONS = {
     },
 }
 
-# Read-only endpoints that don't need auth (status pages, static)
-PUBLIC_PATHS = ['/', '/status', '/backends', '/stats', '/costs']
+# Pages that serve HTML — SSO protects these, API keys protect API endpoints
+WEB_PAGES = ['/', '/status', '/backends', '/stats', '/costs']
 
 _config = None
 _config_mtime = 0
+_oauth = None
 
 
 def _load_config():
@@ -53,7 +54,63 @@ def _load_config():
 def auth_enabled():
     """Check if auth is configured."""
     cfg = _load_config()
-    return cfg is not None and bool(cfg.get('api_keys'))
+    return cfg is not None and (bool(cfg.get('api_keys')) or bool(cfg.get('sso')))
+
+
+def sso_enabled():
+    """Check if SSO is configured."""
+    cfg = _load_config()
+    return cfg is not None and bool(cfg.get('sso', {}).get('issuer'))
+
+
+def init_sso(app):
+    """Initialize OIDC SSO with Flask app. Call once at startup."""
+    global _oauth
+    cfg = _load_config()
+    if not cfg or not cfg.get('sso', {}).get('issuer'):
+        return
+
+    sso = cfg['sso']
+    app.secret_key = sso.get('secret_key', os.urandom(32).hex())
+
+    from authlib.integrations.flask_client import OAuth
+    _oauth = OAuth(app)
+    _oauth.register(
+        name='sso',
+        client_id=sso['client_id'],
+        client_secret=sso.get('client_secret', ''),
+        server_metadata_url=sso['issuer'] + '/.well-known/openid-configuration',
+        client_kwargs={'scope': 'openid profile email'},
+    )
+
+
+def get_oauth():
+    return _oauth
+
+
+def get_sso_role(userinfo):
+    """Map SSO user groups/roles to sheLLaMa role."""
+    cfg = _load_config()
+    if not cfg:
+        return 'viewer'
+    sso = cfg.get('sso', {})
+    role_mapping = sso.get('role_mapping', {})
+
+    # Check groups claim (Azure AD uses 'groups', Keycloak uses 'realm_access.roles' or 'groups')
+    user_groups = set()
+    user_groups.update(userinfo.get('groups', []))
+    realm_access = userinfo.get('realm_access', {})
+    user_groups.update(realm_access.get('roles', []))
+    # Also check roles claim directly
+    user_groups.update(userinfo.get('roles', []))
+
+    # Check from highest to lowest privilege
+    for role in ['admin', 'user', 'viewer']:
+        required_groups = role_mapping.get(role, [])
+        if any(g in user_groups for g in required_groups):
+            return role
+
+    return sso.get('default_role', 'viewer')
 
 
 def get_api_key_info(key):
@@ -70,7 +127,6 @@ def check_endpoint_access(role, endpoint):
     allowed = perms.get('endpoints', [])
     if 'all' in allowed:
         return True
-    # Strip leading / and match
     ep = endpoint.lstrip('/')
     return ep in allowed
 
@@ -86,7 +142,6 @@ def check_model_access(key_info, model):
 def check_cloud_fallback(key_info):
     """Check if an API key can trigger cloud fallback."""
     role = key_info.get('role', 'viewer')
-    # Per-key override
     if 'cloud_fallback' in key_info:
         return key_info['cloud_fallback']
     return ROLE_PERMISSIONS.get(role, {}).get('cloud_fallback', False)
@@ -97,11 +152,9 @@ def require_auth(f):
     @wraps(f)
     def decorated(*args, **kwargs):
         if not auth_enabled():
-            # No auth configured — allow everything
             request._shellama_key_info = None
             return f(*args, **kwargs)
 
-        # Check for API key in header or query param
         key = request.headers.get('X-API-Key') or request.headers.get('Authorization', '').replace('Bearer ', '') or request.args.get('api_key')
 
         if not key:
@@ -117,7 +170,6 @@ def require_auth(f):
         if not check_endpoint_access(role, endpoint):
             return jsonify({'error': f'Role "{role}" cannot access {endpoint}'}), 403
 
-        # Check model access for endpoints that use models
         model = (request.json or {}).get('model', '') if request.is_json else ''
         if model and not check_model_access(key_info, model):
             return jsonify({'error': f'API key not authorized for model "{model}"'}), 403
@@ -147,7 +199,31 @@ def require_admin(f):
     return decorated
 
 
+def require_sso(f):
+    """Decorator: require SSO login for web pages. Passes through if SSO not configured."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not sso_enabled():
+            request._shellama_sso_user = None
+            request._shellama_sso_role = 'admin'  # no SSO = full access
+            return f(*args, **kwargs)
+
+        user = session.get('user')
+        if not user:
+            return redirect('/sso/login')
+
+        request._shellama_sso_user = user
+        request._shellama_sso_role = get_sso_role(user)
+        return f(*args, **kwargs)
+    return decorated
+
+
 def get_key_name():
     """Get the name of the current API key, or 'anonymous'."""
     info = getattr(request, '_shellama_key_info', None)
     return info.get('name', 'unknown') if info else 'anonymous'
+
+
+def get_web_role():
+    """Get the role for the current web session."""
+    return getattr(request, '_shellama_sso_role', 'admin')

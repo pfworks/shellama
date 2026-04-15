@@ -1,5 +1,5 @@
 #!/export/ollama/bin/python3
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, redirect, session
 import requests
 import json
 from queue import Queue, PriorityQueue
@@ -10,12 +10,13 @@ import os
 import sys
 
 app = Flask(__name__)
+app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'shellama-default-secret-change-me')
 
 # Auth setup
 _proj = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
 if _proj not in sys.path:
     sys.path.insert(0, _proj)
-from shared.auth import require_auth, require_admin, get_key_name, auth_enabled
+from shared.auth import require_auth, require_admin, get_key_name, auth_enabled, init_sso, get_oauth, sso_enabled, require_sso, get_web_role
 
 # Backend TLS client cert config (for frontend→backend mTLS)
 _backend_cert = os.environ.get('SHELLAMA_BACKEND_CERT')
@@ -376,18 +377,22 @@ def index():
     return redirect('/status')
 
 @app.route('/status')
+@require_sso
 def status_page():
     return send_from_directory('/export/html', 'status.html')
 
 @app.route('/backends')
+@require_sso
 def backends_page():
     return send_from_directory('/export/html', 'backends.html')
 
 @app.route('/stats')
+@require_sso
 def stats_page():
     return send_from_directory('/export/html', 'stats.html')
 
 @app.route('/costs')
+@require_sso
 def costs_page():
     return send_from_directory('/export/html', 'costs.html')
 
@@ -995,6 +1000,42 @@ def upload():
     
     result, status = proxy_request('/generate', {'commands': commands, 'model': model}, request.remote_addr, 'shell2ansible')
     return jsonify(result), status
+
+# --- SSO Routes ---
+@app.route('/sso/login')
+def sso_login():
+    oauth = get_oauth()
+    if not oauth:
+        return redirect('/status')
+    redirect_uri = request.url_root.rstrip('/') + '/sso/callback'
+    return oauth.sso.authorize_redirect(redirect_uri)
+
+@app.route('/sso/callback')
+def sso_callback():
+    oauth = get_oauth()
+    if not oauth:
+        return redirect('/status')
+    token = oauth.sso.authorize_access_token()
+    userinfo = token.get('userinfo') or oauth.sso.userinfo()
+    session['user'] = dict(userinfo)
+    return redirect('/status')
+
+@app.route('/sso/logout')
+def sso_logout():
+    session.pop('user', None)
+    return redirect('/status')
+
+@app.route('/sso/userinfo')
+def sso_userinfo():
+    """Return current SSO user info and role (for web UI)."""
+    user = session.get('user')
+    if not user:
+        return jsonify({'authenticated': False, 'role': 'admin' if not sso_enabled() else 'none'})
+    from shared.auth import get_sso_role
+    return jsonify({'authenticated': True, 'user': user, 'role': get_sso_role(user)})
+
+# Initialize SSO (overrides secret_key if SSO configured)
+init_sso(app)
 
 if __name__ == '__main__':
     ssl_ctx = None

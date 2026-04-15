@@ -16,5 +16,35 @@
       "role": "viewer",
       "models": []
     }
+  },
+
+  "_comment_sso": "Uncomment ONE of the sso blocks below",
+
+  "_sso_keycloak_example": {
+    "provider": "keycloak",
+    "issuer": "https://keycloak.example.com/realms/shellama",
+    "client_id": "shellama",
+    "client_secret": "your-client-secret",
+    "secret_key": "random-flask-session-secret",
+    "default_role": "viewer",
+    "role_mapping": {
+      "admin": ["shellama-admin"],
+      "user": ["shellama-user"],
+      "viewer": ["shellama-viewer"]
+    }
+  },
+
+  "_sso_azure_ad_example": {
+    "provider": "azure",
+    "issuer": "https://login.microsoftonline.com/YOUR-TENANT-ID/v2.0",
+    "client_id": "your-app-client-id",
+    "client_secret": "your-client-secret",
+    "secret_key": "random-flask-session-secret",
+    "default_role": "viewer",
+    "role_mapping": {
+      "admin": ["SheLLaMa-Admin"],
+      "user": ["SheLLaMa-User"],
+      "viewer": ["SheLLaMa-Viewer"]
+    }
   }
 }
