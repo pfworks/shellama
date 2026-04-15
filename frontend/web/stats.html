@@ -266,5 +266,22 @@
         setInterval(fetchIpTokens, 10000);
         setInterval(fetchUsageStats, 10000);
     </script>
+<script>
+function initAuth() {
+    fetch("/sso/userinfo").then(r=>r.json()).then(d=>{
+        const role = d.role || "admin";
+        if (role !== "admin") {
+            document.querySelectorAll(".admin-only").forEach(el => el.style.display = "none");
+        }
+        const nav = document.querySelector(".nav");
+        if (d.authenticated) {
+            nav.insertAdjacentHTML("beforeend", ' <a href="/sso/logout" style="border-color:#ff8800;color:#ff8800">' + (d.user.name || d.user.email || "logout") + ' ↗</a>');
+        } else if (d.role === "none") {
+            nav.insertAdjacentHTML("beforeend", ' <a href="/sso/login" style="border-color:#ff8800;color:#ff8800">Login</a>');
+        }
+    }).catch(()=>{});
+}
+initAuth();
+</script>
 </body>
 </html>

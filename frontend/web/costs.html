@@ -61,7 +61,7 @@
         <div class="summary">
             <div class="section-header">
                 <div class="section-title">Hypothetical Cloud Costs <span id="pricing-source" style="opacity:0.5"></span></div>
-                <div><button class="btn" onclick="resetCosts()">Clear Costs</button></div>
+                <div><button class="btn admin-only" onclick="resetCosts()">Clear Costs</button></div>
             </div>
             <div style="margin:8px 0; opacity:0.7; font-size:13px;">What your local usage would cost on cloud providers (excludes benchmarks)</div>
             <div style="margin-bottom:10px;">Requests: <span id="h-requests">-</span> &nbsp;|&nbsp; Prompt: <span id="h-prompt">-</span> &nbsp;|&nbsp; Response: <span id="h-response">-</span> &nbsp;|&nbsp; Total tokens: <span id="h-total">-</span></div>
@@ -172,5 +172,22 @@
         loadCosts();
         setInterval(loadCosts, 10000);
     </script>
+<script>
+function initAuth() {
+    fetch("/sso/userinfo").then(r=>r.json()).then(d=>{
+        const role = d.role || "admin";
+        if (role !== "admin") {
+            document.querySelectorAll(".admin-only").forEach(el => el.style.display = "none");
+        }
+        const nav = document.querySelector(".nav");
+        if (d.authenticated) {
+            nav.insertAdjacentHTML("beforeend", ' <a href="/sso/logout" style="border-color:#ff8800;color:#ff8800">' + (d.user.name || d.user.email || "logout") + ' ↗</a>');
+        } else if (d.role === "none") {
+            nav.insertAdjacentHTML("beforeend", ' <a href="/sso/login" style="border-color:#ff8800;color:#ff8800">Login</a>');
+        }
+    }).catch(()=>{});
+}
+initAuth();
+</script>
 </body>
 </html>

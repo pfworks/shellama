@@ -124,7 +124,7 @@
                     }
 
                     const stopBtn = backend.status === 'online' ?
-                        `<button class="stop-btn" onclick="stopBackend('${backend.url}')" ${!backend.active ? 'disabled' : ''}>⛔ Stop</button>` : '';
+                        `<button class="stop-btn" class='admin-only' onclick="stopBackend('${backend.url}')" ${!backend.active ? 'disabled' : ''}>⛔ Stop</button>` : '';
 
                     div.innerHTML = `
                         <div class="backend-header">
@@ -144,7 +144,7 @@
                             <div class="hw-stat"><span class="label">Max Model:</span> ${backend.max_model}</div>
                             <div class="hw-stat"><span class="label">Tasks:</span>
                                 <span id="tasks-${encodeURIComponent(backend.url)}">${(backend.tasks || ['all']).join(', ')}</span>
-                                <button style="background:none;border:1px solid #00ff00;color:#00ff00;cursor:pointer;padding:1px 6px;border-radius:3px;font-family:monospace;font-size:11px;margin-left:5px;" onclick="editTasks('${backend.url}')">edit</button>
+                                <button style="background:none;border:1px solid #00ff00;color:#00ff00;cursor:pointer;padding:1px 6px;border-radius:3px;font-family:monospace;font-size:11px;margin-left:5px;" class='admin-only' onclick="editTasks('${backend.url}')">edit</button>
                             </div>
                         </div>
                         <div class="backend-info">Queue Size: ${backend.queue_size}${modelInfo}</div>
@@ -199,5 +199,22 @@
         updateBackends();
         setInterval(updateBackends, 2000);
     </script>
+<script>
+function initAuth() {
+    fetch("/sso/userinfo").then(r=>r.json()).then(d=>{
+        const role = d.role || "admin";
+        if (role !== "admin") {
+            document.querySelectorAll(".admin-only").forEach(el => el.style.display = "none");
+        }
+        const nav = document.querySelector(".nav");
+        if (d.authenticated) {
+            nav.insertAdjacentHTML("beforeend", ' <a href="/sso/logout" style="border-color:#ff8800;color:#ff8800">' + (d.user.name || d.user.email || "logout") + ' ↗</a>');
+        } else if (d.role === "none") {
+            nav.insertAdjacentHTML("beforeend", ' <a href="/sso/login" style="border-color:#ff8800;color:#ff8800">Login</a>');
+        }
+    }).catch(()=>{});
+}
+initAuth();
+</script>
 </body>
 </html>

@@ -45,7 +45,7 @@
                     <div class="summary-item">Total Tokens: <span id="total-tokens">-</span></div>
                 </div>
                 <div>
-                    <button class="btn" onclick="resetStats()">Clear Stats</button>
+                    <button class="btn" class="btn admin-only" onclick="resetStats()">Clear Stats</button>
                 </div>
             </div>
         </div>
@@ -54,14 +54,14 @@
             <div class="section-header">
                 <div>
                     <span style="font-size:16px">Cloud Fallback:</span>
-                    <span id="fallback-toggle" class="toggle off" onclick="toggleFallback()">OFF</span>
+                    <span id="fallback-toggle" class="toggle off" class="toggle off admin-only" id="fallback-toggle" onclick="toggleFallback()">OFF</span>
                     <span style="opacity:0.5; font-size:12px; margin-left:10px;">When ON, poor local responses auto-retry via cloud without client confirmation</span>
                 </div>
             </div>
         </div>
 
         <div style="text-align:center; margin: 20px 0;">
-            <button class="btn danger" onclick="resetAll()">Clear All Stats &amp; Costs</button>
+            <button class="btn danger admin-only" onclick="resetAll()">Clear All Stats &amp; Costs</button>
         </div>
         <div class="refresh-info">Auto-refreshing every 2 seconds</div>
     </div>
@@ -96,5 +96,22 @@
         updateStatus();
         setInterval(updateStatus, 2000);
     </script>
+<script>
+function initAuth() {
+    fetch("/sso/userinfo").then(r=>r.json()).then(d=>{
+        const role = d.role || "admin";
+        if (role !== "admin") {
+            document.querySelectorAll(".admin-only").forEach(el => el.style.display = "none");
+        }
+        const nav = document.querySelector(".nav");
+        if (d.authenticated) {
+            nav.insertAdjacentHTML("beforeend", ' <a href="/sso/logout" style="border-color:#ff8800;color:#ff8800">' + (d.user.name || d.user.email || "logout") + ' ↗</a>');
+        } else if (d.role === "none") {
+            nav.insertAdjacentHTML("beforeend", ' <a href="/sso/login" style="border-color:#ff8800;color:#ff8800">Login</a>');
+        }
+    }).catch(()=>{});
+}
+initAuth();
+</script>
 </body>
 </html>
