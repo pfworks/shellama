@@ -215,6 +215,8 @@ def ai_chat(message, model):
         response_text = data.get('response', '')
         if data.get('cloud_fallback'):
             response_text += f"\n{GRAY}[cloud fallback: {data.get('cloud_model', 'cloud')}]{RESET}"
+        elif data.get('cached'):
+            response_text += f"\n{GRAY}[cached]{RESET}"
         return response_text, tokens, elapsed, None
     except KeyboardInterrupt:
         # User hit Ctrl+C — tell backend to stop
@@ -350,7 +352,8 @@ def ai_simple(endpoint, payload, result_key):
             print(f"{GRAY}[{data.get('elapsed', 0):.1f}s | {data.get('total_tokens', 0)} tokens | {data.get('cloud_model', 'cloud')} (fallback)]{RESET}", file=sys.stderr)
         else:
             print(f"{CYAN}{result}{RESET}")
-            print(f"{GRAY}[{data.get('elapsed', 0):.1f}s | {data.get('total_tokens', 0)} tokens | {MODEL}]{RESET}", file=sys.stderr)
+            tag = ' (cached)' if data.get('cached') else ''
+            print(f"{GRAY}[{data.get('elapsed', 0):.1f}s | {data.get('total_tokens', 0)} tokens | {MODEL}{tag}]{RESET}", file=sys.stderr)
     except KeyboardInterrupt:
         spinner.stop()
         print(f"\n{GRAY}cancelled — stopping backend...{RESET}", file=sys.stderr)
