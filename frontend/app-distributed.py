@@ -288,9 +288,44 @@ def release_backend(url):
     with backend_lock:
         backend_status[url]['available'] = True
 
+# Prompt cache: {hash: {'result': {...}, 'time': timestamp}}
+_prompt_cache = {}
+CACHE_TTL = int(os.environ.get('SHELLAMA_CACHE_TTL', '300'))  # 5 min default, 0 = disabled
+CACHE_MAX = 500  # max entries
+
+def _cache_key(endpoint, data):
+    """Generate cache key from endpoint + model + content."""
+    import hashlib
+    # Only cache deterministic requests — skip if conversation_id present
+    if data.get('conversation_id') or data.get('messages') or data.get('force_cloud'):
+        return None
+    content = data.get('message', '') or data.get('commands', '') or data.get('description', '') or data.get('code', '') or data.get('playbook', '')
+    if not content:
+        return None
+    model = data.get('model', '')
+    raw = f"{endpoint}:{model}:{content}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
 def proxy_request(endpoint, data, client_ip=None, task_type='unknown'):
     """Send request to available backend with keepalive"""
     model = data.get('model', 'codellama:13b')
+
+    # Check prompt cache
+    ck = _cache_key(endpoint, data) if CACHE_TTL > 0 else None
+    if ck and ck in _prompt_cache:
+        entry = _prompt_cache[ck]
+        if time.time() - entry['time'] < CACHE_TTL:
+            result = dict(entry['result'])
+            result['cached'] = True
+            if client_ip:
+                record_ip_tokens(client_ip, result.get('total_tokens', 0), task_type,
+                               prompt_tokens=result.get('prompt_tokens', 0),
+                               response_tokens=result.get('response_tokens', 0),
+                               key_name=get_key_name(), cached=True)
+            return result, 200
+        else:
+            del _prompt_cache[ck]
+
     backend = get_available_backend(model, task_type=task_type)
     if not backend:
         return {'error': f'No backends available that support model {model}. Check backends.json configuration.'}, 200
@@ -340,6 +375,14 @@ def proxy_request(endpoint, data, client_ip=None, task_type='unknown'):
         if rate_key:
             record_rate_tokens(rate_key, result.get('total_tokens', 0))
         
+        # Store in prompt cache
+        if ck and not result.get('error') and not result.get('cloud_fallback'):
+            if len(_prompt_cache) >= CACHE_MAX:
+                # Evict oldest
+                oldest = min(_prompt_cache, key=lambda k: _prompt_cache[k]['time'])
+                del _prompt_cache[oldest]
+            _prompt_cache[ck] = {'result': result, 'time': time.time()}
+
         return result, 200
     except requests.exceptions.Timeout:
         return {'error': f'Backend {backend} request timed out after 3600 seconds'}, 500
