@@ -293,6 +293,40 @@ _prompt_cache = {}
 CACHE_TTL = int(os.environ.get('SHELLAMA_CACHE_TTL', '300'))  # 5 min default, 0 = disabled
 CACHE_MAX = 500  # max entries
 
+# Audit log: optional request logging
+AUDIT_LOG = os.environ.get('SHELLAMA_AUDIT_LOG', '')  # path to log file, empty = disabled
+AUDIT_MAX_ENTRIES = 10000  # max in-memory entries for web view
+_audit_entries = []
+_audit_lock = Lock()
+
+def _audit(client_ip, key_name, endpoint, model, prompt_preview, tokens, elapsed, cached=False, fallback=False):
+    """Record an audit log entry."""
+    if not AUDIT_LOG and not persisted_totals.get('audit_enabled'):
+        return
+    entry = {
+        'timestamp': time.time(),
+        'time': time.strftime('%Y-%m-%d %H:%M:%S'),
+        'client_ip': client_ip or '',
+        'key_name': key_name or 'anonymous',
+        'endpoint': endpoint,
+        'model': model or '',
+        'prompt': prompt_preview[:200] if prompt_preview else '',
+        'tokens': tokens,
+        'elapsed': elapsed,
+        'cached': cached,
+        'fallback': fallback,
+    }
+    with _audit_lock:
+        _audit_entries.append(entry)
+        if len(_audit_entries) > AUDIT_MAX_ENTRIES:
+            _audit_entries.pop(0)
+    if AUDIT_LOG:
+        try:
+            with open(AUDIT_LOG, 'a') as f:
+                f.write(json.dumps(entry) + '\n')
+        except Exception:
+            pass
+
 def _cache_key(endpoint, data):
     """Generate cache key from endpoint + model + content."""
     import hashlib
@@ -322,6 +356,9 @@ def proxy_request(endpoint, data, client_ip=None, task_type='unknown'):
                                prompt_tokens=result.get('prompt_tokens', 0),
                                response_tokens=result.get('response_tokens', 0),
                                key_name=get_key_name(), cached=True)
+            prompt_preview = data.get('message', '') or data.get('commands', '') or data.get('description', '') or data.get('code', '') or ''
+            _audit(client_ip, get_key_name(), endpoint, data.get('model', ''),
+                   prompt_preview, result.get('total_tokens', 0), 0, cached=True)
             return result, 200
         else:
             del _prompt_cache[ck]
@@ -374,6 +411,12 @@ def proxy_request(endpoint, data, client_ip=None, task_type='unknown'):
         rate_key = getattr(request, '_shellama_key', None)
         if rate_key:
             record_rate_tokens(rate_key, result.get('total_tokens', 0))
+
+        # Audit log
+        prompt_preview = data.get('message', '') or data.get('commands', '') or data.get('description', '') or data.get('code', '') or data.get('playbook', '')
+        _audit(client_ip, get_key_name(), endpoint, data.get('model', ''),
+               prompt_preview, result.get('total_tokens', 0), result.get('elapsed', 0),
+               fallback=result.get('cloud_fallback', False))
         
         # Store in prompt cache
         if ck and not result.get('error') and not result.get('cloud_fallback'):
@@ -1073,6 +1116,41 @@ def _require_secure_admin():
     if get_web_role() != 'admin':
         return jsonify({'error': 'Admin access required'}), 403
     return None
+
+@app.route('/api/audit', methods=['GET'])
+@require_sso
+def api_audit_log():
+    """View audit log (SSO admin + HTTPS only)."""
+    err = _require_secure_admin()
+    if err:
+        return err
+    limit = int(request.args.get('limit', 100))
+    since = float(request.args.get('since', 0))
+    with _audit_lock:
+        entries = [e for e in _audit_entries if e['timestamp'] > since]
+    return jsonify({'entries': entries[-limit:], 'total': len(entries)})
+
+@app.route('/api/audit/toggle', methods=['POST'])
+@require_sso
+def api_audit_toggle():
+    """Enable/disable audit logging (SSO admin + HTTPS only)."""
+    err = _require_secure_admin()
+    if err:
+        return err
+    enabled = (request.json or {}).get('enabled', False)
+    with ip_token_lock:
+        persisted_totals['audit_enabled'] = bool(enabled)
+    save_history()
+    return jsonify({'audit_enabled': bool(enabled)})
+
+@app.route('/api/audit/status')
+def api_audit_status():
+    """Check if audit logging is enabled."""
+    return jsonify({
+        'audit_enabled': bool(AUDIT_LOG) or persisted_totals.get('audit_enabled', False),
+        'file_log': AUDIT_LOG or None,
+        'entries_in_memory': len(_audit_entries),
+    })
 
 @app.route('/api/keys', methods=['GET'])
 @require_sso
