@@ -229,6 +229,19 @@ function ,list {
 function ,help { ,list }
 
 # Add HAL eye to prompt
+# Save original prompt
+$script:_OriginalPrompt = (Get-Command prompt).ScriptBlock
 function prompt { "🔴 $(Get-Location)> " }
 
-Write-Host "sheLLaMa loaded — type ,list for commands" -ForegroundColor DarkGray
+function ,exit {
+    # Restore original prompt
+    Set-Item Function:\prompt $script:_OriginalPrompt
+    # Remove all , functions
+    ',', ',,', ',explain', ',generate', ',analyze', ',img', ',test', ',models', ',tokens', ',list', ',help', ',exit' | ForEach-Object {
+        Remove-Item "Function:\$_" -ErrorAction SilentlyContinue
+    }
+    Remove-Variable _OriginalPrompt -Scope Script -ErrorAction SilentlyContinue
+    Write-Host "sheLLaMa unloaded" -ForegroundColor DarkGray
+}
+
+Write-Host "sheLLaMa loaded — type ,list for commands (,exit to unload)" -ForegroundColor DarkGray

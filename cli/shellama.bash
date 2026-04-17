@@ -27,7 +27,16 @@ export SHELLAMA_API_KEY="${SHELLAMA_API_KEY:-}"
 export SHELLAMA_CONV_ID="${SHELLAMA_CONV_ID:-$(python3 -c 'import uuid; print(uuid.uuid4())')}"
 
 # Add red HAL eye to prompt
+_SHELLAMA_ORIG_PS1="$PS1"
 PS1="🔴 ${PS1}"
+
+# Unload sheLLaMa
+,exit() {
+    unset -f , ,, ,explain ,generate ,analyze ,img ,test ,models ,tokens ,list ,help ,exit
+    PS1="$_SHELLAMA_ORIG_PS1"
+    unset _SHELLAMA_ORIG_PS1 SHELLAMA_CONV_ID
+    echo "sheLLaMa unloaded"
+}
 ,() {
     if [ $# -eq 0 ]; then
         echo "Usage: , <prompt> or ,<command> <args>"
