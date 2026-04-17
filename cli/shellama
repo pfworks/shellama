@@ -186,6 +186,7 @@ class LlamaSpinner:
             time.sleep(0.3)
         sys.stderr.write("\r" + " " * 20 + "\r")
         sys.stderr.flush()
+        sys.stdout.flush()
 
     def stop(self):
         self._stop = True
@@ -279,7 +280,8 @@ def ai_agent(query, quiet=False):
         # Execute each command and collect output
         cmd_outputs = []
         for cmd in commands:
-            print(f"{YELLOW}$ {cmd}{RESET}")
+            sys.stderr.write("\n")
+            print(f"{YELLOW}┌─ $ {cmd}{RESET}")
             if not quiet:
                 try:
                     import termios
@@ -287,7 +289,7 @@ def ai_agent(query, quiet=False):
                 except Exception:
                     pass
                 try:
-                    answer = input(f"\n{YELLOW}Run? [y/N/q] {RESET}").strip().lower()
+                    answer = input(f"{YELLOW}└─ Run? [y/N/q] {RESET}").strip().lower()
                 except (EOFError, KeyboardInterrupt):
                     print()
                     return
@@ -295,6 +297,7 @@ def ai_agent(query, quiet=False):
                     return
                 if answer != 'y':
                     cmd_outputs.append(f"$ {cmd}\n(skipped by user)")
+                    print(f"{GRAY}   (skipped){RESET}")
                     continue
             output = run_command(cmd)
             if output:
