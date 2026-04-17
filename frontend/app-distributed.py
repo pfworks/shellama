@@ -1372,6 +1372,83 @@ def auto_fallback_setting():
         return jsonify({'auto_fallback': bool(val)})
     return jsonify({'auto_fallback': persisted_totals.get('auto_fallback', False)})
 
+# --- OpenAI-Compatible API ---
+
+@app.route('/v1/models', methods=['GET'])
+def v1_models():
+    """OpenAI-compatible model list."""
+    models = []
+    seen = set()
+    for backend in BACKENDS:
+        try:
+            resp = _backend_get(f"{backend['url']}/models", timeout=5)
+            for m in resp.json().get('models', []):
+                if m['name'] not in seen:
+                    seen.add(m['name'])
+                    models.append({
+                        'id': m['name'],
+                        'object': 'model',
+                        'owned_by': 'local',
+                    })
+        except:
+            continue
+    # Include aliases
+    for alias, real in MODEL_ALIASES.items():
+        if alias not in seen:
+            models.append({'id': alias, 'object': 'model', 'owned_by': 'alias'})
+    return jsonify({'object': 'list', 'data': models})
+
+@app.route('/v1/chat/completions', methods=['POST'])
+@require_auth
+def v1_chat_completions():
+    """OpenAI-compatible chat completions endpoint."""
+    data = request.json or {}
+    messages = data.get('messages', [])
+    model = resolve_model(data.get('model', 'default'))
+
+    # Extract the last user message for our /chat endpoint
+    message = ''
+    for m in reversed(messages):
+        if m.get('role') == 'user':
+            message = m.get('content', '')
+            break
+
+    if not message:
+        return jsonify({'error': {'message': 'No user message found', 'type': 'invalid_request_error'}}), 400
+
+    # Pass full messages array to backend
+    result, status = proxy_request('/chat', {
+        'message': message,
+        'model': model,
+        'messages': messages,
+    }, request.remote_addr, 'chat')
+
+    if result.get('error'):
+        return jsonify({'error': {'message': result['error'], 'type': 'server_error'}}), 500
+
+    # Convert to OpenAI format
+    import uuid as _uuid
+    response_id = f"chatcmpl-{_uuid.uuid4().hex[:12]}"
+    return jsonify({
+        'id': response_id,
+        'object': 'chat.completion',
+        'created': int(time.time()),
+        'model': model,
+        'choices': [{
+            'index': 0,
+            'message': {
+                'role': 'assistant',
+                'content': result.get('response', ''),
+            },
+            'finish_reason': 'stop',
+        }],
+        'usage': {
+            'prompt_tokens': result.get('prompt_tokens', 0),
+            'completion_tokens': result.get('response_tokens', 0),
+            'total_tokens': result.get('total_tokens', 0),
+        },
+    })
+
 @app.route('/upload', methods=['POST'])
 @require_auth
 def upload():
