@@ -36,21 +36,27 @@ PS1="🔴 ${PS1}"
 
 # Unload sheLLaMa
 ,exit() {
-    unset -f , ,, ,explain ,generate ,analyze ,img ,test ,models ,tokens ,list ,help ,exit
+    unset -f , ,, ,do ,explain ,generate ,analyze ,img ,test ,models ,tokens ,list ,help ,exit
     PS1="$_SHELLAMA_ORIG_PS1"
     unset _SHELLAMA_ORIG_PS1 SHELLAMA_CONV_ID
     echo "sheLLaMa unloaded"
 }
+# Default , is chat (no command execution). Use ,do for agentic mode.
 ,() {
     if [ $# -eq 0 ]; then
         echo "Usage: , <prompt> or ,<command> <args>"
         echo "Try: ,list"
         return
     fi
+    python3 "$SHELLAMA_BIN" quiet "$@"
+}
+
+# Agentic mode (AI runs commands)
+,do() {
     python3 "$SHELLAMA_BIN" agent "$@"
 }
 
-# Chat mode (no command execution)
+# ,, is same as , (chat)
 ,,() {
     python3 "$SHELLAMA_BIN" quiet "$@"
 }
