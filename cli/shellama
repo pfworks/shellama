@@ -11,7 +11,7 @@ import re
 import glob
 
 API_URL = os.environ.get('SHELLAMA_API', os.environ.get('ANSIBLE_TOOLS_API', 'http://192.168.1.229:5000'))
-MODEL = os.environ.get('SHELLAMA_MODEL', os.environ.get('ANSIBLE_TOOLS_MODEL', 'qwen2.5-coder:7b'))
+MODEL = os.environ.get('SHELLAMA_MODEL', os.environ.get('ANSIBLE_TOOLS_MODEL', 'auto'))
 API_KEY = os.environ.get('SHELLAMA_API_KEY', '')
 TRIGGER = ','
 

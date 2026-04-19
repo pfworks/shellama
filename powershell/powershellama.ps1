@@ -4,7 +4,7 @@
 #>
 
 $SHELLAMA_API = if ($env:SHELLAMA_API) { $env:SHELLAMA_API } elseif ($env:ANSIBLE_TOOLS_API) { $env:ANSIBLE_TOOLS_API } else { "http://192.168.1.229:5000" }
-$SHELLAMA_MODEL = if ($env:SHELLAMA_MODEL) { $env:SHELLAMA_MODEL } elseif ($env:ANSIBLE_TOOLS_MODEL) { $env:ANSIBLE_TOOLS_MODEL } else { "qwen2.5-coder:7b" }
+$SHELLAMA_MODEL = if ($env:SHELLAMA_MODEL) { $env:SHELLAMA_MODEL } elseif ($env:ANSIBLE_TOOLS_MODEL) { $env:ANSIBLE_TOOLS_MODEL } else { "auto" }
 $SHELLAMA_API_KEY = if ($env:SHELLAMA_API_KEY) { $env:SHELLAMA_API_KEY } else { "" }
 $SHELLAMA_CONV_ID = [guid]::NewGuid().ToString()
 $TRIGGER = ","

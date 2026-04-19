@@ -23,7 +23,7 @@ SHELLAMA_BIN="${SHELLAMA_DIR}/shellama"
 
 # Export config if not already set
 export SHELLAMA_API="${SHELLAMA_API:-http://192.168.1.229:5000}"
-export SHELLAMA_MODEL="${SHELLAMA_MODEL:-qwen2.5-coder:7b}"
+export SHELLAMA_MODEL="${SHELLAMA_MODEL:-auto}"
 export SHELLAMA_DOWNLOAD_DIR="${SHELLAMA_DOWNLOAD_DIR:-}"
 export SHELLAMA_API_KEY="${SHELLAMA_API_KEY:-}"
 
