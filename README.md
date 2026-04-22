@@ -283,6 +283,7 @@ curl http://server:5000/queue-status
 | `/queue-history` | GET | Queue size history for graphs |
 | `/usage-stats` | GET | Cumulative usage by client IP and by task type |
 | `/stop` | POST | Stop active task (single backend) |
+| `/heartbeat` | POST | Keep task alive: `{"task_id": "..."}` (backend) |
 | `/stop-all` | POST | Stop all backends (frontend only) |
 | `/stop-backend` | POST | Stop a specific backend (frontend only, takes `{"url": "..."}`) |
 | `/costs` | GET | Cost tracking page (day/week/month/year/custom range) |
@@ -369,6 +370,7 @@ tail -f /var/log/ansible-ollama.log
 | `SHELLAMA_API` | `http://192.168.1.229:5000` | API endpoint |
 | `SHELLAMA_MODEL` | `qwen2.5-coder:7b` | Default model |
 | `AI_IMAGE_MODEL` | `sd-turbo` | Image generation model |
+| `SHELLAMA_TASK_TIMEOUT` | `1800` | Max task runtime seconds (backend, 0 = no limit) |
 | `AI_PS1` | (bash PS1) | Custom prompt (bash CLI only) |
 | `AI_QUIET` | `false` | Start in quiet mode (bash CLI only) |
 | `OPENROUTER_API_KEY` | *(empty)* | Cloud fallback API key |

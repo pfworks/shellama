@@ -22,6 +22,9 @@
         .cost-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
         .cheapest td { color: #44ff44; }
         .costliest td { color: #ff4444; }
+        .bedrock td:first-child { color: #ff9900; }
+        .cost-table tr.section-divider td { border-top: 2px solid #444; padding-top: 10px; }
+        .section-label { color: #ff9900; font-size: 12px; opacity: 0.7; padding: 8px 12px 2px; }
         .range-btn { background: #2b2b2b; color: #00ff00; border: 2px solid #00ff00; padding: 8px 16px; margin: 0 3px; cursor: pointer; border-radius: 3px; font-family: 'Courier New', monospace; }
         .range-btn.active { background: #00ff00; color: #000; }
         .range-selector { text-align: center; margin: 15px 0; }
@@ -113,11 +116,22 @@
                 if (c.total_cost < costs[minIdx].total_cost) minIdx = i;
                 if (c.total_cost > costs[maxIdx].total_cost) maxIdx = i;
             });
+            let inBedrock = false;
             costs.forEach((c, i) => {
+                const isBedrock = c.provider.startsWith('Bedrock ');
+                if (isBedrock && !inBedrock) {
+                    inBedrock = true;
+                    const divider = document.createElement('tr');
+                    divider.className = 'section-divider';
+                    divider.innerHTML = '<td colspan="4" class="section-label">Amazon Bedrock (on-demand, us-east-1)</td>';
+                    tbody.appendChild(divider);
+                }
                 const tr = document.createElement('tr');
-                if (hasTokens && i === minIdx) tr.className = 'cheapest';
-                if (hasTokens && i === maxIdx) tr.className = 'costliest';
-                tr.innerHTML = `<td>${c.provider}</td><td class="num">$${c.input_cost.toFixed(6)}</td><td class="num">$${c.output_cost.toFixed(6)}</td><td class="num">$${c.total_cost.toFixed(6)}</td>`;
+                if (isBedrock) tr.classList.add('bedrock');
+                if (hasTokens && i === minIdx) tr.classList.add('cheapest');
+                if (hasTokens && i === maxIdx) tr.classList.add('costliest');
+                const label = isBedrock ? c.provider.replace('Bedrock ', '') : c.provider;
+                tr.innerHTML = `<td>${label}</td><td class="num">$${c.input_cost.toFixed(6)}</td><td class="num">$${c.output_cost.toFixed(6)}</td><td class="num">$${c.total_cost.toFixed(6)}</td>`;
                 tbody.appendChild(tr);
             });
         }

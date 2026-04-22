@@ -555,9 +555,11 @@ def proxy_request(endpoint, data, client_ip=None, task_type='unknown'):
                 release_backend(backend)
                 backend2 = get_available_backend(model, task_type=task_type)
                 if backend2:
-                    resp2 = session.post(f"{backend2}{endpoint}", json=data, timeout=3600, stream=False)
-                    result = resp2.json()
-                    release_backend(backend2)
+                    try:
+                        resp2 = session.post(f"{backend2}{endpoint}", json=data, timeout=3600, stream=False)
+                        result = resp2.json()
+                    finally:
+                        release_backend(backend2)
         
             # Record tokens for this client IP
             if client_ip:
@@ -589,21 +591,18 @@ def proxy_request(endpoint, data, client_ip=None, task_type='unknown'):
 
             if attempt > 0:
                 result['retried'] = attempt
-            release_backend(backend)
             return result, 200
 
         except requests.exceptions.Timeout:
             last_error = f'Backend {backend} timed out'
-            release_backend(backend)
             _health_failures[backend] = _health_failures.get(backend, 0) + 1
-            backend = get_available_backend(model, task_type=task_type)
-            continue
         except Exception as e:
             last_error = f'Backend {backend}: {str(e)}'
-            release_backend(backend)
             _health_failures[backend] = _health_failures.get(backend, 0) + 1
-            backend = get_available_backend(model, task_type=task_type)
-            continue
+        finally:
+            release_backend(backend)
+
+        backend = get_available_backend(model, task_type=task_type)
 
     return {'error': f'All backends failed. Last error: {last_error}'}, 500
 

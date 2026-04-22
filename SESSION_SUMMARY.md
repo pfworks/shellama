@@ -1,6 +1,6 @@
 # sheLLaMa - Session Summary
 
-Last updated: April 16, 2026
+Last updated: April 21, 2026
 
 ## Project Overview
 
@@ -201,6 +201,24 @@ External tools → /v1/chat/completions (OpenAI-compatible)
 - `/v1/models` — model list including aliases
 - Use with: Cursor, Continue, Open WebUI, LangChain, any OpenAI client
 
+### Amazon Bedrock Cost Tracking
+- Costs page shows Bedrock on-demand pricing alongside OpenRouter cloud providers
+- 13 Bedrock models: Claude Opus 4, Claude 4 Sonnet, Claude 3.5 Sonnet/Haiku, Nova Pro/Lite/Micro/Premier, Llama 4 Maverick/Scout, Llama 3.3 70B, DeepSeek R1, Mistral Large 3
+- Prices fetched live from AWS Pricing API (`aws pricing get-products`), static fallback for models not yet in API (e.g., newer Claude)
+- Bedrock section displayed with AWS orange styling, separate from OpenRouter providers
+
+### Backend Leak Prevention
+- `proxy_request` uses `try/finally` to guarantee `release_backend()` is always called
+- Prevents backends from getting permanently marked unavailable when exceptions occur in token recording, audit, or caching code
+
+### Task Heartbeat & Stale Task Reaper
+- `submit_and_wait()` replaces bare `event.wait()` — sends heartbeats every 10s while waiting
+- `stale_task_reaper` background thread checks every 10s:
+  - Tasks running longer than `SHELLAMA_TASK_TIMEOUT` (default 30 min) are killed
+  - Tasks whose client disconnected (no heartbeat for 30s) are killed
+- `/heartbeat` endpoint for explicit keepalive
+- Prevents stuck image generation or other long tasks from blocking backends indefinitely
+
 ## Environment Variables
 
 | Variable | Default | Description |
@@ -222,6 +240,7 @@ External tools → /v1/chat/completions (OpenAI-compatible)
 | `SHELLAMA_BACKEND_CA` | *(empty)* | CA to verify backend certs |
 | `SHELLAMA_CERT_DIR` | `/etc/shellama/pki` | PKI directory |
 | `AI_IMAGE_MODEL` | `sd-turbo` | Image generation model |
+| `SHELLAMA_TASK_TIMEOUT` | `1800` | Max task runtime in seconds (backend, 0 = no limit) |
 | `AI_PS1` | (bash PS1) | Custom prompt (bash CLI only) |
 | `AI_QUIET` | `false` | Start in quiet mode |
 | `OPENROUTER_API_KEY` | *(empty)* | Cloud fallback API key |

@@ -16,6 +16,11 @@ active_task = None
 task_results = {}
 stop_requested = False
 
+# Task timeout: cancel tasks if client disconnects or max time exceeded
+TASK_TIMEOUT = int(os.environ.get('SHELLAMA_TASK_TIMEOUT', '1800'))  # 30 min default
+task_waiters = {}  # task_id -> {'last_heartbeat': timestamp}
+_waiter_lock = Lock()
+
 # Statistics tracking
 total_requests = 0
 total_tokens = 0
@@ -51,6 +56,57 @@ def periodic_save_stats():
 load_stats()
 Thread(target=periodic_save_stats, daemon=True).start()
 
+def stale_task_reaper():
+    """Kill active task if the requesting client has disconnected (no heartbeat)."""
+    global active_task, stop_requested
+    while True:
+        time.sleep(10)
+        if active_task is None:
+            continue
+        task_id = active_task.get('id')
+        started = active_task.get('started', 0)
+        now = time.time()
+        # Check max timeout
+        if started and (now - started) > TASK_TIMEOUT:
+            stop_requested = True
+            try:
+                import subprocess
+                subprocess.run(['pkill', '-f', 'ollama.*runner'], timeout=5, capture_output=True)
+            except Exception:
+                pass
+            continue
+        # Check if waiter is still alive (heartbeat within 30s)
+        with _waiter_lock:
+            waiter = task_waiters.get(task_id)
+        if waiter and (now - waiter['last_heartbeat']) > 30:
+            stop_requested = True
+            try:
+                import subprocess
+                subprocess.run(['pkill', '-f', 'ollama.*runner'], timeout=5, capture_output=True)
+            except Exception:
+                pass
+
+Thread(target=stale_task_reaper, daemon=True).start()
+
+
+def submit_and_wait(task, timeout=3600):
+    """Submit task to queue, send heartbeats while waiting, clean up on disconnect."""
+    task_id = task['id']
+    event = task['event']
+    with _waiter_lock:
+        task_waiters[task_id] = {'last_heartbeat': time.time()}
+    task_queue.put(task)
+    try:
+        while not event.wait(timeout=10):
+            # Update heartbeat while we're still connected
+            with _waiter_lock:
+                if task_id in task_waiters:
+                    task_waiters[task_id]['last_heartbeat'] = time.time()
+    finally:
+        with _waiter_lock:
+            task_waiters.pop(task_id, None)
+    return task_results.pop(task_id, None)
+
 # Cloud fallback configuration (OpenRouter or LiteLLM)
 OPENROUTER_API_KEY = os.environ.get('OPENROUTER_API_KEY', '')
 OPENROUTER_MODEL = os.environ.get('OPENROUTER_MODEL', 'anthropic/claude-3.5-sonnet')
@@ -66,6 +122,7 @@ def worker():
         active_task = task
         stop_requested = False
         task_id = task['id']
+        task['started'] = time.time()
         task_type = task.get('type')
         model = task.get('model', 'codellama:13b')
         
@@ -599,6 +656,16 @@ def queue_status():
     
     return jsonify(status)
 
+@app.route('/heartbeat', methods=['POST'])
+def heartbeat():
+    """Client sends heartbeat to keep its task alive."""
+    task_id = request.json.get('task_id', '')
+    with _waiter_lock:
+        if task_id in task_waiters:
+            task_waiters[task_id]['last_heartbeat'] = time.time()
+            return jsonify({'ok': True})
+    return jsonify({'ok': False, 'error': 'unknown task_id'}), 404
+
 @app.route('/stop', methods=['POST'])
 def stop_processing():
     """Stop active task and clear queue"""
@@ -655,10 +722,7 @@ def generate():
             'client_ip': request.json.get('client_ip', request.remote_addr),
             'client_agent': request.json.get('client_agent', request.headers.get('User-Agent', '')),
             'summary': f'shell2ansible: {summary}'}
-    task_queue.put(task)
-    
-    event.wait()
-    result = task_results.pop(task_id, None)
+    result = submit_and_wait(task)
     
     if result is None:
         return jsonify({'error': f'Task {task_id} completed but result was lost'}), 500
@@ -687,10 +751,7 @@ def upload():
     task = {'id': task_id, 'commands': commands, 'model': model, 'event': event, 'force_cloud': request.json.get('force_cloud', False),
             'client_ip': request.remote_addr, 'client_agent': request.headers.get('User-Agent', ''),
             'summary': f'upload: {commands[:80].replace(chr(10), " ")}'}
-    task_queue.put(task)
-    
-    event.wait()
-    result = task_results.pop(task_id, None)
+    result = submit_and_wait(task)
     
     if result is None:
         return jsonify({"error": f"Task {task_id} completed but result was lost"}), 500
@@ -716,10 +777,7 @@ def explain():
             'client_ip': request.json.get('client_ip', request.remote_addr),
             'client_agent': request.json.get('client_agent', request.headers.get('User-Agent', '')),
             'summary': f'explain: {playbook[:80].replace(chr(10), " ")}'}
-    task_queue.put(task)
-    
-    event.wait()
-    result = task_results.pop(task_id, None)
+    result = submit_and_wait(task)
     
     if result is None:
         return jsonify({"error": f"Task {task_id} completed but result was lost"}), 500
@@ -745,10 +803,7 @@ def generate_code_endpoint():
             'client_ip': request.json.get('client_ip', request.remote_addr),
             'client_agent': request.json.get('client_agent', request.headers.get('User-Agent', '')),
             'summary': f'codegen: {description[:80].replace(chr(10), " ")}'}
-    task_queue.put(task)
-    
-    event.wait()
-    result = task_results.pop(task_id, None)
+    result = submit_and_wait(task)
     
     if result is None:
         return jsonify({"error": f"Task {task_id} completed but result was lost"}), 500
@@ -774,10 +829,7 @@ def explain_code_endpoint():
             'client_ip': request.json.get('client_ip', request.remote_addr),
             'client_agent': request.json.get('client_agent', request.headers.get('User-Agent', '')),
             'summary': f'explain-code: {code[:80].replace(chr(10), " ")}'}
-    task_queue.put(task)
-    
-    event.wait()
-    result = task_results.pop(task_id, None)
+    result = submit_and_wait(task)
     
     if result is None:
         return jsonify({"error": f"Task {task_id} completed but result was lost"}), 500
@@ -803,10 +855,7 @@ def chat_endpoint():
             'client_ip': request.json.get('client_ip', request.remote_addr),
             'client_agent': request.json.get('client_agent', request.headers.get('User-Agent', '')),
             'summary': f'chat: {message[:80].replace(chr(10), " ")}'}
-    task_queue.put(task)
-    
-    event.wait()
-    result = task_results.pop(task_id, None)
+    result = submit_and_wait(task)
     
     if result is None:
         return jsonify({"error": f"Task {task_id} completed but result was lost"}), 500
@@ -833,10 +882,7 @@ def analyze_endpoint():
             'client_ip': request.json.get('client_ip', request.remote_addr),
             'client_agent': request.json.get('client_agent', request.headers.get('User-Agent', '')),
             'summary': f'analyze: {paths}'}
-    task_queue.put(task)
-    
-    event.wait()
-    result = task_results.pop(task_id, None)
+    result = submit_and_wait(task)
     
     if result is None:
         return jsonify({"error": f"Task {task_id} completed but result was lost"}), 500
@@ -867,10 +913,7 @@ def generate_image_endpoint():
             'client_ip': request.json.get('client_ip', request.remote_addr),
             'client_agent': request.json.get('client_agent', request.headers.get('User-Agent', '')),
             'summary': f'image: {prompt[:80]}'}
-    task_queue.put(task)
-    
-    event.wait()
-    result = task_results.pop(task_id, None)
+    result = submit_and_wait(task)
     
     if result is None:
         return jsonify({'error': f'Task {task_id} completed but result was lost'}), 500
