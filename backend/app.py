@@ -64,38 +64,33 @@ def stale_task_reaper():
         if active_task is None:
             continue
         task_id = active_task.get('id')
+        task_type = active_task.get('type', '')
         started = active_task.get('started', 0)
         now = time.time()
+
+        should_kill = False
         # Check max timeout
         if TASK_TIMEOUT and started and (now - started) > TASK_TIMEOUT:
+            should_kill = True
+        # Check if waiter is gone (client disconnected)
+        if not should_kill:
+            with _waiter_lock:
+                waiter = task_waiters.get(task_id)
+            if waiter is None:
+                if started and (now - started) > 15:
+                    should_kill = True
+            elif (now - waiter['last_heartbeat']) > 30:
+                should_kill = True
+
+        if should_kill:
             stop_requested = True
-            try:
-                import subprocess
-                subprocess.run(['pkill', '-f', 'ollama.*runner'], timeout=5, capture_output=True)
-            except Exception:
-                pass
-            continue
-        # Check if waiter is still alive
-        with _waiter_lock:
-            waiter = task_waiters.get(task_id)
-        if waiter is None:
-            # No waiter registered — client disconnected, kill the task
-            # (give 15s grace period after task starts before checking)
-            if started and (now - started) > 15:
-                stop_requested = True
+            # For LLM tasks, also kill the ollama runner process
+            if task_type != 'generate_image':
                 try:
                     import subprocess
                     subprocess.run(['pkill', '-f', 'ollama.*runner'], timeout=5, capture_output=True)
                 except Exception:
                     pass
-        elif (now - waiter['last_heartbeat']) > 30:
-            # Waiter exists but heartbeat is stale — client hung
-            stop_requested = True
-            try:
-                import subprocess
-                subprocess.run(['pkill', '-f', 'ollama.*runner'], timeout=5, capture_output=True)
-            except Exception:
-                pass
 
 Thread(target=stale_task_reaper, daemon=True).start()
 
@@ -548,12 +543,19 @@ def generate_image(prompt, model='sd-turbo', steps=20, width=512, height=512):
         if 'turbo' in hf_model:
             steps = min(steps, 4)
         
+        # Callback to abort if stop_requested
+        def _check_stop(pipe, step, timestep, kwargs):
+            if stop_requested:
+                raise InterruptedError("Task cancelled")
+            return kwargs
+
         result = _image_pipe(
             prompt,
             num_inference_steps=steps,
             width=width,
             height=height,
             guidance_scale=0.0 if 'turbo' in hf_model else 7.5,
+            callback_on_step_end=_check_stop,
         )
         
         image = result.images[0]
