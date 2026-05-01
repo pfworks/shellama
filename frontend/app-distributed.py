@@ -1026,12 +1026,22 @@ def generate_image_endpoint():
     if client_ip:
         data['client_ip'] = client_ip
 
-    # Image generation doesn't use an LLM — try each backend until one succeeds
+    # Image generation doesn't use an LLM — try each backend, prefer idle ones
     errors = []
+    # Sort backends: prefer those with queue_size 0 (idle)
+    candidates = []
     for b in BACKENDS:
         try:
-            _backend_get(f"{b['url']}/queue-status", timeout=2)
-            resp = _backend_post(f"{b['url']}/generate-image", json=data, timeout=3600)
+            resp = _backend_get(f"{b['url']}/queue-status", timeout=2)
+            qs = resp.json().get('queue_size', 999)
+            candidates.append((qs, b))
+        except:
+            errors.append(f"{b['url']}: unreachable")
+    candidates.sort(key=lambda x: x[0])
+
+    for qs, b in candidates:
+        try:
+            resp = _backend_post(f"{b['url']}/generate-image", json=data, timeout=1800)
             result = resp.json()
             if result.get('error'):
                 errors.append(f"{b['url']}: {result['error']}")
@@ -1040,7 +1050,7 @@ def generate_image_endpoint():
                 record_ip_tokens(client_ip, result.get('total_tokens', 0), 'generate-image')
             return jsonify(result), 200
         except:
-            errors.append(f"{b['url']}: unreachable")
+            errors.append(f"{b['url']}: request failed")
             continue
     return jsonify({'error': 'All backends failed: ' + '; '.join(errors)}), 200
 

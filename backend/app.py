@@ -97,13 +97,19 @@ Thread(target=stale_task_reaper, daemon=True).start()
 
 def submit_and_wait(task, timeout=3600):
     """Submit task to queue, send heartbeats while waiting, clean up on disconnect."""
+    global stop_requested
     task_id = task['id']
     event = task['event']
+    deadline = time.time() + timeout
     with _waiter_lock:
         task_waiters[task_id] = {'last_heartbeat': time.time()}
     task_queue.put(task)
     try:
         while not event.wait(timeout=10):
+            if time.time() > deadline:
+                # Overall timeout — cancel the task
+                stop_requested = True
+                return task_results.pop(task_id, {'error': f'Task timed out after {timeout}s'})
             # Update heartbeat while we're still connected
             with _waiter_lock:
                 if task_id in task_waiters:
@@ -157,8 +163,8 @@ def worker():
             with stats_lock:
                 total_tokens += result.get('total_tokens', 0)
             
-            # Check if we should fallback to cloud
-            if USE_CLOUD_FALLBACK and OPENROUTER_API_KEY:
+            # Check if we should fallback to cloud (not applicable to image generation)
+            if USE_CLOUD_FALLBACK and OPENROUTER_API_KEY and task_type != 'generate_image':
                 force_cloud = task.get('force_cloud', False)
                 if force_cloud:
                     result = fallback_to_openrouter(task, result)
@@ -532,12 +538,19 @@ def generate_image(prompt, model='sd-turbo', steps=20, width=512, height=512):
         
         # Cache pipeline — only reload if model changed
         if _image_pipe is None or _image_pipe_model != hf_model:
+            if stop_requested:
+                raise InterruptedError("Task cancelled during setup")
             _image_pipe = AutoPipelineForText2Image.from_pretrained(
                 hf_model,
                 torch_dtype=dtype,
             )
+            if stop_requested:
+                raise InterruptedError("Task cancelled during setup")
             _image_pipe.to(device)
             _image_pipe_model = hf_model
+        
+        if stop_requested:
+            raise InterruptedError("Task cancelled before inference")
         
         # Turbo models use fewer steps
         if 'turbo' in hf_model:
