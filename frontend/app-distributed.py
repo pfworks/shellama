@@ -1026,33 +1026,34 @@ def generate_image_endpoint():
     if client_ip:
         data['client_ip'] = client_ip
 
-    # Image generation doesn't use an LLM — try each backend, prefer idle ones
-    errors = []
-    # Sort backends: prefer those with queue_size 0 (idle)
+    # Image generation is CPU-heavy — pick the single best backend (most RAM = fastest)
     candidates = []
     for b in BACKENDS:
         try:
             resp = _backend_get(f"{b['url']}/queue-status", timeout=2)
-            qs = resp.json().get('queue_size', 999)
-            candidates.append((qs, b))
+            info = resp.json()
+            qs = info.get('queue_size', 999)
+            active = info.get('active', False)
+            ram = info.get('ram_total_gb', 0)
+            busy_penalty = 1000 if (active or qs > 0) else 0
+            score = busy_penalty - ram
+            candidates.append((score, b))
         except:
-            errors.append(f"{b['url']}: unreachable")
+            pass
+    if not candidates:
+        return jsonify({'error': 'No backends reachable'}), 200
     candidates.sort(key=lambda x: x[0])
 
-    for qs, b in candidates:
-        try:
-            resp = _backend_post(f"{b['url']}/generate-image", json=data, timeout=1800)
-            result = resp.json()
-            if result.get('error'):
-                errors.append(f"{b['url']}: {result['error']}")
-                continue
-            if client_ip:
-                record_ip_tokens(client_ip, result.get('total_tokens', 0), 'generate-image')
-            return jsonify(result), 200
-        except:
-            errors.append(f"{b['url']}: request failed")
-            continue
-    return jsonify({'error': 'All backends failed: ' + '; '.join(errors)}), 200
+    # Only try the best backend — don't cascade to slower ones
+    b = candidates[0][1]
+    try:
+        resp = _backend_post(f"{b['url']}/generate-image", json=data, timeout=3600)
+        result = resp.json()
+        if client_ip and not result.get('error'):
+            record_ip_tokens(client_ip, result.get('total_tokens', 0), 'generate-image')
+        return jsonify(result), 200
+    except Exception as e:
+        return jsonify({'error': f"{b['url']}: {str(e)}"}), 200
 
 @app.route('/image-models')
 def image_models():

@@ -1,6 +1,6 @@
 # sheLLaMa - Session Summary
 
-Last updated: April 21, 2026
+Last updated: May 2, 2026
 
 ## Project Overview
 
@@ -68,7 +68,7 @@ Clients → Frontend (:5000) → Backend Farm
 External tools → /v1/chat/completions (OpenAI-compatible)
 ```
 
-- **Backend** (`backend/app.py`) — Ollama worker, queue-based, cloud fallback with quality detection
+- **Backend** (`backend/app.py`) — Ollama worker, queue-based, cloud fallback with quality detection, persistent image worker subprocess
 - **Frontend** (`frontend/app-distributed.py`) — Load balancer, routing, caching, auth, rate limiting, health checks, webhooks
 - **Deploy** — `deploy/deploy.yml` (backend), `deploy/deploy-frontend.yml` (frontend)
 
@@ -101,7 +101,7 @@ External tools → /v1/chat/completions (OpenAI-compatible)
 | `/generate-code` | POST | Description → code |
 | `/explain-code` | POST | Code → explanation |
 | `/analyze` | POST | Multi-file analysis (parallel/sequential) |
-| `/generate-image` | POST | Text → image |
+| `/generate-image` | POST | Text → image (routed to best backend by RAM) |
 | `/upload` | POST | File upload for shell→ansible |
 | `/test` | POST | Benchmark models with cloud cost estimates |
 
@@ -154,6 +154,25 @@ External tools → /v1/chat/completions (OpenAI-compatible)
 | `/api/webhooks` | GET/POST | Manage webhook URLs (admin) |
 
 ## Key Features
+
+### Image Generation (Persistent Worker Subprocess)
+- Runs Stable Diffusion in a **persistent subprocess** — model loads once, stays in memory across requests
+- Subprocess communicates via stdin/stdout JSON lines — killable by reaper or `/stop` endpoint
+- First request loads model (~90s for sd-turbo on 94GB machine), subsequent requests ~45s
+- Frontend routes image requests to the **single best backend** (idle + most RAM) — no sequential fallback to avoid multi-hour waits
+- Cloud fallback is skipped for image tasks (cloud LLMs can't generate images)
+- Supported models: `sd-turbo` (fast, recommended), `sdxl-turbo` (higher quality, slower), `sd-1.5`, `sd-2.1`
+- CLI default model: `AI_IMAGE_MODEL` env var (default `sdxl-turbo` in CLI, override with `export AI_IMAGE_MODEL=sd-turbo`)
+
+### Task Queue & Timeouts
+- `submit_and_wait()` enforces overall timeout (default 3600s) — returns timeout error if exceeded
+- `stale_task_reaper` background thread checks every 10s:
+  - Tasks running longer than `SHELLAMA_TASK_TIMEOUT` (default 30 min) are killed
+  - Tasks whose client disconnected (no heartbeat for 30s) are killed
+  - Image tasks: kills the subprocess directly via `proc.kill()`
+  - LLM tasks: kills ollama runner via `pkill`
+- `/heartbeat` endpoint for explicit keepalive
+- Worker thread never gets stuck — subprocess approach ensures worker always returns
 
 ### Rate Limiting & Budgets
 - Per-key `rate_limit: {rpm: N, tpd: N}` (requests/min, tokens/day)
@@ -211,13 +230,10 @@ External tools → /v1/chat/completions (OpenAI-compatible)
 - `proxy_request` uses `try/finally` to guarantee `release_backend()` is always called
 - Prevents backends from getting permanently marked unavailable when exceptions occur in token recording, audit, or caching code
 
-### Task Heartbeat & Stale Task Reaper
-- `submit_and_wait()` replaces bare `event.wait()` — sends heartbeats every 10s while waiting
-- `stale_task_reaper` background thread checks every 10s:
-  - Tasks running longer than `SHELLAMA_TASK_TIMEOUT` (default 30 min) are killed
-  - Tasks whose client disconnected (no heartbeat for 30s) are killed
-- `/heartbeat` endpoint for explicit keepalive
-- Prevents stuck image generation or other long tasks from blocking backends indefinitely
+### Cloud Fallback
+- Skipped entirely for `generate_image` tasks (cloud LLMs can't generate images)
+- `_fallback_reason()` checks for text content keys (`playbook`, `code`, `response`, `explanation`, `analysis`)
+- Image results don't have these keys, so fallback is excluded at the worker level to prevent false triggers
 
 ## Environment Variables
 
@@ -239,7 +255,7 @@ External tools → /v1/chat/completions (OpenAI-compatible)
 | `SHELLAMA_BACKEND_KEY` | *(empty)* | Client key for frontend→backend mTLS |
 | `SHELLAMA_BACKEND_CA` | *(empty)* | CA to verify backend certs |
 | `SHELLAMA_CERT_DIR` | `/etc/shellama/pki` | PKI directory |
-| `AI_IMAGE_MODEL` | `sd-turbo` | Image generation model |
+| `AI_IMAGE_MODEL` | `sdxl-turbo` | Image generation model (CLI default; `sd-turbo` recommended for speed) |
 | `SHELLAMA_TASK_TIMEOUT` | `1800` | Max task runtime in seconds (backend, 0 = no limit) |
 | `AI_PS1` | (bash PS1) | Custom prompt (bash CLI only) |
 | `AI_QUIET` | `false` | Start in quiet mode |

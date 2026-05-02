@@ -9,6 +9,7 @@ import requests
 
 import json
 import time
+import sys
 
 app = Flask(__name__)
 task_queue = Queue()
@@ -84,8 +85,15 @@ def stale_task_reaper():
 
         if should_kill:
             stop_requested = True
-            # For LLM tasks, also kill the ollama runner process
-            if task_type != 'generate_image':
+            if task_type == 'generate_image':
+                # Kill image generation subprocess
+                if _image_proc is not None:
+                    try:
+                        _image_proc.kill()
+                    except Exception:
+                        pass
+            else:
+                # For LLM tasks, kill the ollama runner process
                 try:
                     import subprocess
                     subprocess.run(['pkill', '-f', 'ollama.*runner'], timeout=5, capture_output=True)
@@ -504,18 +512,71 @@ def chat(message, model='codellama:13b', messages=None):
         'total_tokens': response.get('prompt_eval_count', 0) + response.get('eval_count', 0)
     }
 
-_image_pipe = None  # cached pipeline
-_image_pipe_model = None  # which model is loaded
+_image_proc = None  # persistent image worker subprocess
+_image_proc_lock = Lock()
+
+_IMAGE_WORKER_SCRIPT = r'''
+import sys, json, time, base64, io, os
+
+# Load pipeline once, reuse for all requests
+_pipe = None
+_pipe_model = None
+
+def load_pipe(hf_model):
+    global _pipe, _pipe_model
+    if _pipe is not None and _pipe_model == hf_model:
+        return
+    import torch
+    from diffusers import AutoPipelineForText2Image
+    has_cuda = torch.cuda.is_available()
+    dtype = torch.float16 if has_cuda else (torch.bfloat16 if hasattr(torch, "bfloat16") else torch.float32)
+    device = "cuda" if has_cuda else "cpu"
+    _pipe = AutoPipelineForText2Image.from_pretrained(hf_model, torch_dtype=dtype)
+    _pipe.to(device)
+    _pipe_model = hf_model
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        req = json.loads(line)
+        start = time.time()
+        hf_model = req['model']
+        load_pipe(hf_model)
+        guidance = 0.0 if 'turbo' in hf_model else 7.5
+        result = _pipe(req['prompt'], num_inference_steps=req['steps'],
+                       width=req['width'], height=req['height'], guidance_scale=guidance)
+        buf = io.BytesIO()
+        result.images[0].save(buf, format="PNG")
+        resp = {"image": base64.b64encode(buf.getvalue()).decode(), "elapsed": round(time.time() - start, 2),
+                "model": hf_model, "prompt": req['prompt'], "steps": req['steps'],
+                "width": req['width'], "height": req['height']}
+    except Exception as e:
+        resp = {"image": "", "elapsed": round(time.time() - start, 2) if 'start' in dir() else 0, "error": str(e)}
+    sys.stdout.write(json.dumps(resp) + "\n")
+    sys.stdout.flush()
+'''
+
+def _get_image_worker():
+    """Get or start the persistent image worker subprocess."""
+    global _image_proc
+    import subprocess as _sp
+    if _image_proc is not None and _image_proc.poll() is None:
+        return _image_proc
+    _image_proc = _sp.Popen(
+        [sys.executable, '-c', _IMAGE_WORKER_SCRIPT],
+        stdin=_sp.PIPE, stdout=_sp.PIPE, stderr=_sp.PIPE,
+        bufsize=0
+    )
+    return _image_proc
 
 def generate_image(prompt, model='sd-turbo', steps=20, width=512, height=512):
-    global _image_pipe, _image_pipe_model
     import time
-    import base64
-    import io
-    
+    import json as _json
+
     start_time = time.time()
-    
-    # Map friendly names to HuggingFace model IDs
+
     model_map = {
         'sd-1.5': 'sd-legacy/stable-diffusion-v1-5',
         'stable-diffusion-v1-5': 'sd-legacy/stable-diffusion-v1-5',
@@ -524,77 +585,44 @@ def generate_image(prompt, model='sd-turbo', steps=20, width=512, height=512):
         'sdxl-turbo': 'stabilityai/sdxl-turbo',
         'sd-turbo': 'stabilityai/sd-turbo',
     }
-    
     hf_model = model_map.get(model, model)
-    
-    try:
-        import torch
-        from diffusers import AutoPipelineForText2Image
-        
-        # Use bfloat16 on CPU for speed, float16 on CUDA
-        has_cuda = torch.cuda.is_available()
-        dtype = torch.float16 if has_cuda else (torch.bfloat16 if hasattr(torch, 'bfloat16') else torch.float32)
-        device = "cuda" if has_cuda else "cpu"
-        
-        # Cache pipeline — only reload if model changed
-        if _image_pipe is None or _image_pipe_model != hf_model:
-            if stop_requested:
-                raise InterruptedError("Task cancelled during setup")
-            _image_pipe = AutoPipelineForText2Image.from_pretrained(
-                hf_model,
-                torch_dtype=dtype,
-            )
-            if stop_requested:
-                raise InterruptedError("Task cancelled during setup")
-            _image_pipe.to(device)
-            _image_pipe_model = hf_model
-        
-        if stop_requested:
-            raise InterruptedError("Task cancelled before inference")
-        
-        # Turbo models use fewer steps
-        if 'turbo' in hf_model:
-            steps = min(steps, 4)
-        
-        # Callback to abort if stop_requested
-        def _check_stop(pipe, step, timestep, kwargs):
-            if stop_requested:
-                raise InterruptedError("Task cancelled")
-            return kwargs
+    if 'turbo' in hf_model:
+        steps = min(steps, 4)
 
-        result = _image_pipe(
-            prompt,
-            num_inference_steps=steps,
-            width=width,
-            height=height,
-            guidance_scale=0.0 if 'turbo' in hf_model else 7.5,
-            callback_on_step_end=_check_stop,
-        )
-        
-        image = result.images[0]
-        
-        # Convert to base64 PNG
-        buf = io.BytesIO()
-        image.save(buf, format='PNG')
-        image_b64 = base64.b64encode(buf.getvalue()).decode('utf-8')
-        
-        elapsed = time.time() - start_time
-        
-        return {
-            'image': image_b64,
-            'elapsed': round(elapsed, 2),
-            'model': hf_model,
-            'prompt': prompt,
-            'steps': steps,
-            'width': width,
-            'height': height,
-        }
+    try:
+        with _image_proc_lock:
+            proc = _get_image_worker()
+
+        req = _json.dumps({"prompt": prompt, "model": hf_model, "steps": steps,
+                           "width": width, "height": height}) + "\n"
+        proc.stdin.write(req.encode())
+        proc.stdin.flush()
+
+        # Poll for response, checking stop_requested
+        while True:
+            if stop_requested:
+                proc.kill()
+                proc.wait()
+                global _image_proc
+                _image_proc = None
+                return {'image': '', 'elapsed': round(time.time() - start_time, 2),
+                        'error': 'Task cancelled'}
+            # Check if process died
+            if proc.poll() is not None:
+                _image_proc = None
+                stderr = proc.stderr.read().decode(errors='replace')
+                return {'image': '', 'elapsed': round(time.time() - start_time, 2),
+                        'error': f'Image worker crashed: {stderr[-500:]}'}
+            # Try to read a line (non-blocking via select)
+            import select
+            ready, _, _ = select.select([proc.stdout], [], [], 1.0)
+            if ready:
+                line = proc.stdout.readline()
+                if line:
+                    return _json.loads(line)
     except Exception as e:
-        return {
-            'image': '',
-            'elapsed': round(time.time() - start_time, 2),
-            'error': str(e),
-        }
+        return {'image': '', 'elapsed': round(time.time() - start_time, 2),
+                'error': str(e)}
 
 def analyze_files(files, model='codellama:13b'):
     import time
@@ -658,7 +686,7 @@ def queue_status():
         'active': active_task is not None,
         'total_requests': total_requests,
         'total_tokens': total_tokens,
-        'cpu_percent': psutil.cpu_percent(interval=0.1),
+        'cpu_percent': psutil.cpu_percent(interval=0.5),
         'ram_available_gb': round(psutil.virtual_memory().available / (1024**3), 2),
         'ram_total_gb': round(psutil.virtual_memory().total / (1024**3), 2),
         'cpu_arch': platform.machine(),
@@ -715,12 +743,20 @@ def stop_processing():
     if active_task is not None:
         stop_requested = True
         stopped['active_cancelled'] = True
-        # Kill any running ollama process to interrupt inference
-        import subprocess
-        try:
-            subprocess.run(['pkill', '-f', 'ollama.*runner'], timeout=5)
-        except:
-            pass
+        if active_task.get('type') == 'generate_image':
+            # Kill image generation subprocess
+            if _image_proc is not None:
+                try:
+                    _image_proc.kill()
+                except:
+                    pass
+        else:
+            # Kill any running ollama process to interrupt inference
+            import subprocess
+            try:
+                subprocess.run(['pkill', '-f', 'ollama.*runner'], timeout=5)
+            except:
+                pass
 
     return jsonify(stopped)
 

@@ -369,7 +369,7 @@ tail -f /var/log/ansible-ollama.log
 |----------|---------|-------------|
 | `SHELLAMA_API` | `http://192.168.1.229:5000` | API endpoint |
 | `SHELLAMA_MODEL` | `qwen2.5-coder:7b` | Default model |
-| `AI_IMAGE_MODEL` | `sd-turbo` | Image generation model |
+| `AI_IMAGE_MODEL` | `sdxl-turbo` | Image generation model (`sd-turbo` recommended for speed) |
 | `SHELLAMA_TASK_TIMEOUT` | `1800` | Max task runtime seconds (backend, 0 = no limit) |
 | `AI_PS1` | (bash PS1) | Custom prompt (bash CLI only) |
 | `AI_QUIET` | `false` | Start in quiet mode (bash CLI only) |
@@ -511,11 +511,13 @@ IP addresses in SANs are automatically detected and added as `IP:` entries. PKI 
 
 ## Troubleshooting
 
-**Timeouts:** Frontend→backend timeout is 3600s (1 hour). Uses keepalive connections. Each task gets a unique ID for tracking.
+**Timeouts:** Frontend→backend timeout is 3600s (1 hour). Uses keepalive connections. Each task gets a unique ID for tracking. `submit_and_wait` enforces the timeout — returns an error if exceeded rather than blocking forever.
 
 **No backends available:** Check `backends.json` — `max_model` must match or exceed the requested model. Test with `curl http://backend:5000/queue-status`.
 
 **Slow responses:** Use smaller models. Add more backends. Check `htop`.
+
+**Image generation slow:** Use `sd-turbo` instead of `sdxl-turbo` (`export AI_IMAGE_MODEL=sd-turbo`). Image gen runs in a persistent subprocess — first request loads the model (~90s), subsequent requests are faster (~45s on a 94GB machine). The frontend routes image requests to the backend with the most RAM. Backends with 16GB RAM may not have enough memory to load the model.
 
 **Service management (Linux):**
 ```bash
