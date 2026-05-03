@@ -27,6 +27,7 @@ MAX_ROUNDS = 10
 session_tokens = 0
 session_requests = 0
 session_elapsed = 0.0
+last_output = ''  # Last AI response for ,save
 import uuid as _uuid
 SESSION_CONV_ID = os.environ.get('SHELLAMA_CONV_ID', str(_uuid.uuid4()))
 
@@ -237,6 +238,7 @@ def ai_chat(message, model):
 
 def ai_agent(query, quiet=False):
     """Agentic loop: AI can run commands and iterate."""
+    global last_output
     os_info = subprocess.run(['uname', '-sr'], capture_output=True, text=True).stdout.strip()
     system = SYSTEM_PROMPT.format(os_info=os_info, cwd=os.getcwd())
     conversation = f"{system}\n\nUser: {query}"
@@ -261,6 +263,7 @@ def ai_agent(query, quiet=False):
 
         if not commands:
             # Final answer — always show, even in quiet mode
+            last_output = response
             if quiet:
                 print(response)
             else:
@@ -344,7 +347,7 @@ def _handle_fallback(data, endpoint, payload):
 
 def ai_simple(endpoint, payload, result_key):
     """Simple one-shot API call to a backend endpoint."""
-    global session_tokens, session_requests, session_elapsed
+    global session_tokens, session_requests, session_elapsed, last_output
     try:
         spinner.start()
         resp = _session.post(f"{API_URL}{endpoint}", json=payload, timeout=3600)
@@ -358,6 +361,7 @@ def ai_simple(endpoint, payload, result_key):
         session_requests += 1
         session_elapsed += data.get('elapsed', 0)
         result = data.get(result_key, '')
+        last_output = result
         if data.get('cloud_fallback'):
             print(f"{CYAN}{result}{RESET}")
             print(f"{GRAY}[{data.get('elapsed', 0):.1f}s | {data.get('total_tokens', 0)} tokens | {data.get('cloud_model', 'cloud')} (fallback)]{RESET}", file=sys.stderr)
@@ -474,6 +478,25 @@ def read_file_arg(arg):
         return None
 
 
+def ai_save(filename):
+    """Save last AI output to a file. Strips markdown code fences if the entire output is a single fenced block."""
+    if not last_output:
+        print("shellama: nothing to save (no AI output yet)", file=sys.stderr)
+        return
+    # Strip markdown code fences if output is a single fenced block
+    content = last_output.strip()
+    m = re.match(r'^```\w*\n(.*?)```$', content, re.DOTALL)
+    if m:
+        content = m.group(1)
+    path = os.path.expanduser(filename)
+    outdir = os.path.dirname(path)
+    if outdir:
+        os.makedirs(outdir, exist_ok=True)
+    with open(path, 'w') as f:
+        f.write(content)
+    print(f"{CYAN}saved: {os.path.abspath(path)}{RESET}")
+
+
 SERVICES = {
     'explain':  ('Explain a file (any code, playbook, config, etc.)',),
     'generate': ('Generate code/playbook from description',),
@@ -481,6 +504,7 @@ SERVICES = {
     'img':      ('Generate image from text prompt',),
     'chat':     ('Chat with AI (default)',),
     'test':     ('Benchmark models — compare speed, tokens, and cost',),
+    'save':     ('Save last AI output to a file',),
 }
 
 
@@ -617,6 +641,8 @@ def show_services():
     for name, (desc,) in SERVICES.items():
         if name in ('chat', 'img', 'generate'):
             arg = '<prompt>'
+        elif name == 'save':
+            arg = '<filename>'
         else:
             arg = '<file/dir>'
         print(f"  {YELLOW},{name}{RESET} {arg} - {desc}")
@@ -699,8 +725,9 @@ def main():
     print(f"  {YELLOW},{RESET}  <prompt>       agentic chat        {YELLOW},,{RESET} <prompt>       quiet chat")
     print(f"  {YELLOW},explain{RESET}  <file>  explain any file     {YELLOW},generate{RESET} <desc>  generate code")
     print(f"  {YELLOW},analyze{RESET}  <path>  analyze files/dirs   {YELLOW},img{RESET} <prompt>     generate image")
-    print(f"  {YELLOW},test{RESET}             benchmark models     {YELLOW},models{RESET}           select model")
-    print(f"  {YELLOW},list{RESET}             all services         {YELLOW},quiet{RESET}            toggle quiet")
+    print(f"  {YELLOW},save{RESET}  <filename>  save last output     {YELLOW},test{RESET}             benchmark models")
+    print(f"  {YELLOW},models{RESET}           select model         {YELLOW},list{RESET}             all services")
+    print(f"  {YELLOW},quiet{RESET}            toggle quiet")
     print()
 
     while True:
@@ -750,6 +777,8 @@ def main():
                 print(f"quiet mode: {'on' if quiet else 'off'}")
             elif query == 'tokens':
                 print(f"{CYAN}Session usage: {session_requests} requests | {session_tokens} tokens | {session_elapsed:.1f}s{RESET}")
+            elif query.startswith('save '):
+                ai_save(query[5:].strip())
             elif query == 'test' or query.startswith('test '):
                 ai_test(query[5:].strip() or None)
             elif query.startswith('img '):
@@ -819,6 +848,8 @@ if __name__ == '__main__':
             ai_test(args or None)
         elif cmd == 'models':
             select_model()
+        elif cmd == 'save':
+            ai_save(args)
         elif cmd == 'tokens':
             try:
                 since = os.environ.get('SHELLAMA_SESSION_START', '0')
